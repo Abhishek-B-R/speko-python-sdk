@@ -56,6 +56,14 @@ class AsyncRealtimeSession:
     def expires_at(self) -> str:
         return self._info.expires_at
 
+    @property
+    def input_sample_rate(self) -> int:
+        return self._info.input_sample_rate or 24000
+
+    @property
+    def output_sample_rate(self) -> int:
+        return self._info.output_sample_rate or 24000
+
     async def send_audio(self, pcm: bytes) -> None:
         """Ship a PCM16 audio chunk to the server (binary frame).
 
@@ -106,7 +114,7 @@ class AsyncRealtimeSession:
                     yield {
                         "type": "audio",
                         "pcm": bytes(raw),
-                        "sample_rate": 24000,
+                        "sample_rate": self.output_sample_rate,
                     }
                     continue
                 try:
@@ -129,6 +137,24 @@ def _translate_frame(parsed: Any) -> Optional[RealtimeFrame]:
     if not isinstance(parsed, dict):
         return None
     t = parsed.get("t")
+    if t == "ready":
+        return {
+            "type": "ready",
+            "input_sample_rate": int(parsed.get("inputSampleRate") or 24000),
+            "output_sample_rate": int(parsed.get("outputSampleRate") or 24000),
+        }
+    if t == "interruption":
+        return {
+            "type": "interruption",
+            "at": "assistant" if parsed.get("at") == "assistant" else "user",
+        }
+    if t == "server_tool_call":
+        return {
+            "type": "server_tool_call",
+            "id": parsed.get("id", ""),
+            "name": parsed.get("name", ""),
+            "status": parsed.get("status", "started"),
+        }
     if t == "transcript":
         return {
             "type": "transcript",

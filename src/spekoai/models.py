@@ -1,21 +1,25 @@
 """Pydantic models and literal types for the Speko Python SDK.
 
-All models serialize/validate using camelCase aliases to match the wire
-protocol, while exposing snake_case attributes on the Python side.
+Most models serialize/validate using camelCase aliases to match the wire
+protocol, while exposing snake_case attributes on the Python side
+(``_SpekoModel``). A handful of endpoints (calls, callbacks, call events,
+transfers) serialize snake_case on the wire — those models subclass
+``_SpekoSnakeModel`` and their field names match the wire directly.
 """
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 OptimizeFor = Literal["balanced", "accuracy", "latency", "cost"]
 ProviderModality = Literal["stt", "llm", "tts"]
-ChatRole = Literal["system", "user", "assistant"]
+ChatRole = Literal["system", "user", "assistant", "tool"]
 KeySource = Literal["BYOK", "MANAGED"]
 CreditLedgerKind = Literal["grant", "debit", "topup", "refund", "adjustment"]
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 class _SpekoModel(BaseModel):
@@ -26,6 +30,12 @@ class _SpekoModel(BaseModel):
         populate_by_name=True,
         extra="ignore",
     )
+
+
+class _SpekoSnakeModel(BaseModel):
+    """Base model for endpoints whose wire format is snake_case."""
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class AllowedProviders(_SpekoModel):
@@ -62,12 +72,136 @@ class RoutingIntent(_SpekoModel):
     optimize_for: Optional[OptimizeFor] = None
 
 
+# --- Chat / tools -------------------------------------------------------------
+
+
+class ChatToolCall(_SpekoModel):
+    """One LLM-emitted tool invocation.
+
+    ``args`` is a JSON-encoded string (LLMs may stream partial JSON; the
+    proxy guarantees a complete, parseable string).
+    """
+
+    id: str
+    name: str
+    args: str
+
+
 class ChatMessage(_SpekoModel):
     role: ChatRole
     content: str
+    # Present on role='assistant' when the model invoked one or more tools.
+    tool_calls: Optional[list[ChatToolCall]] = None
+    # Required on role='tool' — pairs with the id from a prior assistant tool_calls[].
+    tool_call_id: Optional[str] = None
+    # Present on role='tool' when the tool execution failed. The proxy
+    # translates to provider-native error signals so the LLM sees the failure.
+    is_error: Optional[bool] = None
+
+
+ChatToolExecutionMode = Literal["inline", "webhook", "builtin", "integration"]
+
+# Spoken lead-in behavior before a server-executed tool runs. `auto` lets the
+# gateway decide from the tool's recent execution durations; `always` forces a
+# spoken lead-in; `never` runs the tool silently.
+ChatToolPreToolSpeech = Literal["auto", "always", "never"]
+
+
+class AgentWebhookAuthHeaderInput(_SpekoModel):
+    """Outbound auth header input — ``value`` is the plaintext credential Speko
+    encrypts at rest. Required on create; omit on update to keep the value
+    already stored under this header's ref."""
+
+    name: str
+    value: Optional[str] = None
+
+
+class AgentWebhookAuthHeader(_SpekoModel):
+    """Outbound auth header as returned by the API — value stays server-side."""
+
+    name: str
+    secret_ref: str
+
+
+class ChatToolSourceInline(_SpekoModel):
+    kind: Literal["inline"] = "inline"
+
+
+class ChatToolSourceWebhook(_SpekoModel):
+    """Webhook source referenced from a ``ChatTool`` — carries the
+    ``secret_ref`` pointer into Speko's secrets store, never the plaintext."""
+
+    kind: Literal["webhook"] = "webhook"
+    url: str
+    secret_ref: str
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeader]] = None
+    timeout_ms: Optional[int] = None
+    # `async` returns `async_ack` immediately while Speko dispatches the
+    # webhook in the background.
+    response_mode: Optional[Literal["sync", "async"]] = None
+    async_ack: Optional[str] = None
+
+
+class ChatToolSourceBuiltin(_SpekoModel):
+    kind: Literal["builtin"] = "builtin"
+    name: str
+    config: Optional[Any] = None
+
+
+class ChatToolSourceIntegration(_SpekoModel):
+    """Integration source — binds the tool to an org-installed Speko app
+    action (e.g. Google Calendar ``create_event``)."""
+
+    kind: Literal["integration"] = "integration"
+    installation_id: str
+    app_key: str
+    action_key: str
+    config: Optional[Any] = None
+
+
+ChatToolSource = Union[
+    ChatToolSourceInline,
+    ChatToolSourceWebhook,
+    ChatToolSourceBuiltin,
+    ChatToolSourceIntegration,
+]
+
+
+class ChatTool(_SpekoModel):
+    """Tool definition exposed to the LLM. ``parameters`` is a JSON Schema
+    (draft-7) object.
+
+    ``execution_mode`` and ``source`` are optional and back-compat: omitting
+    both preserves inline behavior (the caller runs the tool). Set
+    ``execution_mode='webhook'`` with a matching webhook/integration source
+    to opt into server-managed execution.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    execution_mode: Optional[ChatToolExecutionMode] = None
+    source: Optional[ChatToolSource] = None
+    # Spoken lead-in behavior before this tool executes. Defaults to `auto`
+    # for registered tools.
+    pre_tool_speech: Optional[ChatToolPreToolSpeech] = None
+
+
+ChatToolChoiceFunctionName = dict[str, Any]
+# 'auto' | 'none' | 'required' | {'type': 'function', 'function': {'name': ...}}
+ChatToolChoice = Union[Literal["auto", "none", "required"], dict[str, Any]]
 
 
 # --- Transcribe -------------------------------------------------------------
+
+
+class SttOptions(_SpekoModel):
+    """Provider-facing STT overrides. Routing continues to use the intent
+    language; ``language`` here only changes the provider's STT stream."""
+
+    keywords: Optional[list[str]] = None
+    language: Optional[str] = None
 
 
 class TranscribeResult(_SpekoModel):
@@ -77,6 +211,39 @@ class TranscribeResult(_SpekoModel):
     confidence: Optional[float] = None
     failover_count: int = 0
     scores_run_id: Optional[str] = None
+
+
+class TranscribeStreamMeta(_SpekoModel):
+    type: Literal["meta"] = "meta"
+    provider: str
+    model: str
+    failover_count: int = 0
+    scores_run_id: Optional[str] = None
+
+
+class TranscribeStreamTranscript(_SpekoModel):
+    type: Literal["transcript"] = "transcript"
+    text: str
+    is_final: bool = False
+    confidence: Optional[float] = None
+
+
+class TranscribeStreamDone(TranscribeResult):
+    type: Literal["done"] = "done"
+
+
+class StreamError(_SpekoModel):
+    type: Literal["error"] = "error"
+    error: str
+    code: str = "STREAM_ERROR"
+
+
+TranscribeStreamEvent = Union[
+    TranscribeStreamMeta,
+    TranscribeStreamTranscript,
+    TranscribeStreamDone,
+    StreamError,
+]
 
 
 # --- Synthesize -------------------------------------------------------------
@@ -98,6 +265,31 @@ class SynthesizeResult(_SpekoModel):
     scores_run_id: Optional[str] = None
 
 
+# --- Voices (TTS catalog) ---------------------------------------------------
+
+
+class VoiceCatalogEntry(_SpekoModel):
+    # Routing-key vendor (matches allowed_providers.tts entries).
+    vendor: str
+    # Voice id passed through to the provider's TTS API.
+    id: str
+    name: str
+
+
+class VoicesProviderEntry(_SpekoModel):
+    key: str
+    name: str
+    models: list[str]
+    # True when the provider's voice library is account-scoped and must be
+    # fetched live from the provider (currently only ElevenLabs).
+    voices_fetched_live: bool
+
+
+class VoicesListResult(_SpekoModel):
+    voices: list[VoiceCatalogEntry]
+    providers: list[VoicesProviderEntry]
+
+
 # --- Complete (LLM) ---------------------------------------------------------
 
 
@@ -113,6 +305,49 @@ class CompleteResult(_SpekoModel):
     usage: CompleteUsage
     failover_count: int = 0
     scores_run_id: Optional[str] = None
+    # Present when the LLM invoked tools instead of (or in addition to)
+    # emitting text.
+    tool_calls: Optional[list[ChatToolCall]] = None
+
+
+class CompleteStreamMeta(_SpekoModel):
+    type: Literal["meta"] = "meta"
+    provider: str
+    model: str
+    failover_count: int = 0
+    total_failover_count: int = 0
+    scores_run_id: Optional[str] = None
+    hop: int = 0
+
+
+class CompleteStreamDelta(_SpekoModel):
+    type: Literal["delta"] = "delta"
+    text: str
+
+
+class CompleteStreamToolCall(ChatToolCall):
+    type: Literal["tool_call"] = "tool_call"
+
+
+class CompleteStreamServerToolCall(_SpekoModel):
+    type: Literal["server_tool_call"] = "server_tool_call"
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class CompleteStreamDone(CompleteResult):
+    type: Literal["done"] = "done"
+
+
+CompleteStreamEvent = Union[
+    CompleteStreamMeta,
+    CompleteStreamDelta,
+    CompleteStreamToolCall,
+    CompleteStreamServerToolCall,
+    CompleteStreamDone,
+    StreamError,
+]
 
 
 # --- Usage ------------------------------------------------------------------
@@ -164,13 +399,13 @@ class CreditLedgerPage(_SpekoModel):
 
 # --- Realtime (S2S) ---------------------------------------------------------
 
-RealtimeProvider = Literal["openai", "google", "xai"]
+RealtimeProvider = Literal["openai", "google", "xai", "inworld", "alibaba", "speko-lab"]
 
 
 class RealtimeToolSpec(_SpekoModel):
     name: str
     description: str
-    parameters: dict[str, object]
+    parameters: dict[str, Any]
 
 
 class RealtimeConnectParams(_SpekoModel):
@@ -178,9 +413,12 @@ class RealtimeConnectParams(_SpekoModel):
 
     Unlike cascade sessions, realtime bypasses LiveKit: the server proxies
     the client WebSocket directly to the provider (OpenAI Realtime, Gemini
-    Live, xAI Grok Voice) so time-to-first-audio stays under ~300 ms.
+    Live, xAI Grok Voice, Inworld) so time-to-first-audio stays under ~300 ms.
     """
 
+    # Persisted agent whose workspace webhook routes should receive
+    # lifecycle events.
+    agent_id: Optional[str] = None
     provider: RealtimeProvider
     model: str
     voice: Optional[str] = None
@@ -189,6 +427,9 @@ class RealtimeConnectParams(_SpekoModel):
     input_sample_rate: Optional[Literal[16000, 24000]] = None
     output_sample_rate: Optional[Literal[16000, 24000]] = None
     tools: Optional[list[RealtimeToolSpec]] = None
+    # Exact-match attributes used only for workspace webhook routing.
+    # Requires agent_id.
+    webhook_tags: Optional[dict[str, str]] = None
     metadata: Optional[dict[str, object]] = None
     # Max session duration in seconds. Server-capped at 1800 (30 min).
     ttl_seconds: Optional[int] = None
@@ -201,4 +442,1177 @@ class RealtimeSessionInfo(_SpekoModel):
     session_id: str
     ws_url: str
     ws_token: str
+    input_sample_rate: Optional[Literal[16000, 24000]] = None
+    output_sample_rate: Optional[Literal[16000, 24000]] = None
     expires_at: str
+
+
+# --- Voice (phone dial) -------------------------------------------------------
+
+
+class VoiceDialLlmOptions(_SpekoModel):
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+
+class VoiceDialTtsOptions(_SpekoModel):
+    sample_rate: Optional[int] = None
+    speed: Optional[float] = None
+
+
+class TurnHandlingEndpointing(_SpekoModel):
+    min_delay: Optional[float] = None
+    max_delay: Optional[float] = None
+
+
+class TurnHandlingInterruption(_SpekoModel):
+    mode: Optional[Literal["adaptive", "vad"]] = None
+    min_duration: Optional[float] = None
+    min_words: Optional[int] = None
+
+
+class TurnHandling(_SpekoModel):
+    """Per-call turn-taking overrides. ``greet_first`` defaults ON for
+    outbound: the greeting plays immediately while AMD classifies in the
+    background. Pass False to hold the greeting for the AMD verdict."""
+
+    profile: Optional[Literal["conversational", "ivr", "ivr_patient"]] = None
+    endpointing: Optional[TurnHandlingEndpointing] = None
+    interruption: Optional[TurnHandlingInterruption] = None
+    turn_detection: Optional[Union[bool, Literal["stt"]]] = None
+    context_threshold: Optional[bool] = None
+    greet_first: Optional[bool] = None
+
+
+class TelephonyAmd(_SpekoModel):
+    mode: Optional[Literal["agent", "carrier", "disabled"]] = None
+    timeout_seconds: Optional[float] = None
+
+
+class TelephonyOptions(_SpekoModel):
+    """Per-call SIP routing hints. Carrier AMD requires trunk/provider
+    support."""
+
+    region: Optional[str] = None
+    amd: Optional[TelephonyAmd] = None
+
+
+class VoiceDialParams(_SpekoModel):
+    """Parameters for ``speko.voice.dial`` — POST /v1/sessions/phone."""
+
+    # Destination number in E.164 format (e.g. "+12015551234").
+    to: str
+    # Caller ID. Falls back to the org default if omitted server-side.
+    from_: Optional[str] = Field(default=None, alias="from")
+    # Persisted assistant to run for this call. When supplied, `intent` can
+    # be omitted.
+    agent_id: Optional[str] = None
+    intent: Optional[RoutingIntent] = None
+    constraints: Optional[PipelineConstraints] = None
+    # TTS voice id passed through to the picked TTS provider.
+    voice: Optional[str] = None
+    system_prompt: Optional[str] = None
+    # Optional first utterance. Omit to use the agent default.
+    first_message: Optional[str] = None
+    # Call-time values for template variables in system_prompt /
+    # first_message. Sending this key (even {}) compiles both strings as
+    # Liquid templates at call-create time. Unresolved names fail the request
+    # with 400 MISSING_TEMPLATE_VARIABLES. Keys under `system.` are rejected.
+    variables: Optional[dict[str, str]] = None
+    llm: Optional[VoiceDialLlmOptions] = None
+    tts_options: Optional[VoiceDialTtsOptions] = None
+    stt_options: Optional[SttOptions] = None
+    # Server-side wall-clock cap in seconds. Clamped server-side to 30s-4h.
+    max_duration_seconds: Optional[int] = None
+    turn_handling: Optional[TurnHandling] = None
+    telephony: Optional[TelephonyOptions] = None
+    # Exact-match attributes used only for workspace webhook routing.
+    # Requires agent_id.
+    webhook_tags: Optional[dict[str, str]] = None
+    # Free-form metadata round-tripped to your webhooks.
+    metadata: Optional[dict[str, object]] = None
+
+
+class VoiceDialResult(_SpekoModel):
+    session_id: str
+    call_control_id: str
+    room_name: str
+    # 'dialing' on a real call, 'dialing-stub' if managed telephony isn't
+    # configured.
+    status: Literal["dialing", "dialing-stub"]
+    to: str
+    from_: str = Field(alias="from")
+
+
+# --- Sessions -----------------------------------------------------------------
+
+
+class SessionToolCall(_SpekoModel):
+    name: str
+    args: str
+
+
+class SessionTranscriptEntry(_SpekoModel):
+    """One turn from GET /v1/sessions/:id/transcript — the lightweight live
+    transcript poll. Note the camelCase wire keys: this endpoint's
+    serialization differs from the snake_case ``CallTranscriptEntry``
+    embedded in ``CallDetail``."""
+
+    id: str
+    index: int
+    source: Literal["user", "agent", "system"]
+    text: str
+    started_at: str
+    ended_at: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    # Per-stage latency legs (ms) — None on user/system turns.
+    eou_ms: Optional[float] = None
+    llm_ttft_ms: Optional[float] = None
+    tts_ttfb_ms: Optional[float] = None
+    latency_status: Optional[Literal["partial", "complete", "interrupted", "error"]] = None
+    conversational_latency_ms: Optional[float] = None
+    # Tool calls the agent made on this turn (empty when none).
+    tool_calls: list[SessionToolCall] = Field(default_factory=list)
+
+
+class SessionTranscript(_SpekoModel):
+    entries: list[SessionTranscriptEntry]
+
+
+class SessionStreamStatus(_SpekoModel):
+    type: Literal["status"] = "status"
+    status: str
+    ended_at: Optional[str] = None
+
+
+class SessionStreamTranscript(_SpekoModel):
+    type: Literal["transcript"] = "transcript"
+    turn: SessionTranscriptEntry
+
+
+class SessionStreamCallEvent(_SpekoModel):
+    type: Literal["event"] = "event"
+    event: CallEvent
+
+
+class SessionStreamEnd(_SpekoModel):
+    type: Literal["end"] = "end"
+    reason: Literal["session_ended"] = "session_ended"
+
+
+SessionStreamEvent = Union[
+    SessionStreamStatus,
+    SessionStreamTranscript,
+    SessionStreamCallEvent,
+    SessionStreamEnd,
+]
+
+
+# --- Phone numbers ------------------------------------------------------------
+
+PhoneNumberDirection = Literal["inbound", "outbound", "both"]
+PhoneNumberSource = Literal["managed", "sip_trunk"]
+PhoneNumberSmsAssignmentStatus = Literal[
+    "FAILED_ASSIGNMENT",
+    "PENDING_ASSIGNMENT",
+    "ASSIGNED",
+    "PENDING_UNASSIGNMENT",
+    "FAILED_UNASSIGNMENT",
+]
+
+
+class PhoneNumberSetupStatus(_SpekoModel):
+    status: Literal["ready", "action_required", "suspended"]
+    inbound_ready: bool
+    outbound_ready: bool
+    agent_ready: bool
+    forwarding_required: bool
+    sip_connection_ready: bool
+    issues: list[str]
+
+
+class PhoneNumberRow(_SpekoModel):
+    id: str
+    organization_id: str
+    e164: str
+    source: PhoneNumberSource
+    # Platform-neutral resource id for a platform-managed number.
+    provider_resource_id: Optional[str] = None
+    # Deprecated: use provider_resource_id.
+    telnyx_phone_number_id: Optional[str] = None
+    # Deprecated: LiveKit trunk IDs are internal and no longer exposed.
+    sip_trunk_id: Optional[str] = None
+    sip_connection_installation_id: Optional[str] = None
+    sip_provider_name: Optional[str] = None
+    direction: PhoneNumberDirection
+    dispatch_metadata_template: Optional[dict[str, Any]] = None
+    label: Optional[str] = None
+    sms10dlc_profile_id: Optional[str] = Field(default=None, alias="sms10dlcProfileId")
+    sms_campaign_id: Optional[str] = None
+    sms_assignment_status: Optional[PhoneNumberSmsAssignmentStatus] = None
+    sms_assignment_updated_at: Optional[str] = None
+    # 1:1 link to a persisted agent. When set, inbound calls hydrate
+    # pipeline config from the agent row.
+    agent_id: Optional[str] = None
+    setup_status: PhoneNumberSetupStatus
+    next_charge_at: str
+    last_charged_at: Optional[str] = None
+    suspended_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class PhoneNumberCreateParams(_SpekoModel):
+    e164: str
+    direction: Optional[PhoneNumberDirection] = None
+    # Dispatch metadata template (variables {{var}} resolved at dial).
+    dispatch_metadata_template: Optional[dict[str, Any]] = None
+    label: Optional[str] = None
+    # 1:1 link to an agent in the same org.
+    agent_id: Optional[str] = None
+
+
+class PhoneNumberImportSipTrunkParams(_SpekoModel):
+    """Import a number carried on your own SIP trunk. Supply either
+    ``sip_connection_installation_id`` (preferred, productized SIP
+    connections) or the legacy ``sip_trunk_id``."""
+
+    e164: str
+    sip_connection_installation_id: Optional[str] = None
+    # Legacy LiveKit outbound trunk id. Ignored when
+    # sip_connection_installation_id is present.
+    sip_trunk_id: Optional[str] = None
+    # Optional provider/account label for display.
+    sip_provider_name: Optional[str] = None
+    direction: Optional[PhoneNumberDirection] = None
+    dispatch_metadata_template: Optional[dict[str, Any]] = None
+    label: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+class PhoneNumberUpdateParams(_SpekoModel):
+    direction: Optional[PhoneNumberDirection] = None
+    dispatch_metadata_template: Optional[dict[str, Any]] = None
+    label: Optional[str] = None
+    # Pass None explicitly to unlink, a string to relink.
+    agent_id: Optional[str] = None
+
+
+class AvailablePhoneNumberRegion(_SpekoModel):
+    state: Optional[str] = None
+    locality: Optional[str] = None
+    rate_center: Optional[str] = None
+
+
+class AvailablePhoneNumber(_SpekoModel):
+    e164: str
+    friendly_name: str
+    monthly_cost_usd: float
+    upfront_cost_usd: float
+    features: list[str]
+    region: AvailablePhoneNumberRegion
+
+
+PhoneNumberKybStatus = Literal[
+    "missing", "draft", "submitted", "approved", "rejected", "revoked"
+]
+PhoneNumberKybSubmissionStatus = Literal[
+    "draft", "submitted", "approved", "rejected", "revoked"
+]
+PhoneNumberKybSlackNotificationStatus = Literal[
+    "not_queued", "queued", "enqueue_failed"
+]
+
+
+class PhoneNumberKybAddress(_SpekoModel):
+    street: str
+    city: str
+    state: str
+    postal_code: str
+    country: str
+
+
+class PhoneNumberKybBusinessProfile(_SpekoModel):
+    legal_name: str
+    display_name: str
+    entity_type: str
+    country: str
+    registration_id: Optional[str] = None
+    website: str
+    address: PhoneNumberKybAddress
+    use_case: str
+    expected_usage: str
+
+
+class PhoneNumberKybAuthorizedRepresentative(_SpekoModel):
+    name: str
+    title: str
+    email: str
+    phone: Optional[str] = None
+
+
+class PhoneNumberKybDraftParams(_SpekoModel):
+    business_profile: PhoneNumberKybBusinessProfile
+    authorized_representative: PhoneNumberKybAuthorizedRepresentative
+    attestation_accepted: Optional[bool] = None
+
+
+class PhoneNumberKybSubmitParams(_SpekoModel):
+    business_profile: PhoneNumberKybBusinessProfile
+    authorized_representative: PhoneNumberKybAuthorizedRepresentative
+    attestation_accepted: Literal[True]
+
+
+class PhoneNumberKybSubmission(_SpekoModel):
+    id: str
+    organization_id: str
+    status: PhoneNumberKybSubmissionStatus
+    business_profile: Optional[PhoneNumberKybBusinessProfile] = None
+    authorized_representative: Optional[PhoneNumberKybAuthorizedRepresentative] = None
+    attestation_accepted: bool
+    attested_at: Optional[str] = None
+    submitted_by_user_id: Optional[str] = None
+    submitted_by_email: Optional[str] = None
+    submitted_by_api_key_id: Optional[str] = None
+    submitted_at: Optional[str] = None
+    reviewer_user_id: Optional[str] = None
+    reviewer_email: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    slack_notification_status: PhoneNumberKybSlackNotificationStatus
+    slack_notification_job_id: Optional[str] = None
+    slack_notification_error: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class PhoneNumberKybPrefill(_SpekoModel):
+    business_profile: PhoneNumberKybBusinessProfile
+    authorized_representative: PhoneNumberKybAuthorizedRepresentative
+
+
+class PhoneNumberKybOverview(_SpekoModel):
+    status: PhoneNumberKybStatus
+    submission: Optional[PhoneNumberKybSubmission] = None
+    prefill: Optional[PhoneNumberKybPrefill] = None
+
+
+# --- Agents ---------------------------------------------------------------------
+
+
+class AgentIntent(_SpekoModel):
+    """Routing intent for an agent's voice pipeline. Narrower than the
+    top-level ``RoutingIntent`` — the agents API specifically accepts
+    ``latency``, ``quality``, or ``cost`` (no ``balanced`` / ``accuracy``)."""
+
+    language: str
+    optimize_for: Optional[Literal["latency", "quality", "cost"]] = None
+
+
+class AgentLlmOptions(_SpekoModel):
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    model: Optional[str] = None
+
+
+class AgentAllowedProviders(_SpekoModel):
+    stt: Optional[list[str]] = None
+    llm: Optional[list[str]] = None
+    tts: Optional[list[str]] = None
+    s2s: Optional[list[str]] = None
+
+
+class AgentStackPreferences(_SpekoModel):
+    allowed_providers: Optional[AgentAllowedProviders] = None
+
+
+class AgentSttOptions(_SpekoModel):
+    # Vocabulary keywords forwarded to whichever STT provider the router picks.
+    keywords: Optional[list[str]] = None
+    # STT stream-language override ('en', 'es-MX', Deepgram's 'multi', or
+    # 'auto'). Never affects stack routing — that keeps the agent language.
+    language: Optional[str] = None
+
+
+AgentAmbientClip = Literal["office-ambience", "keyboard-typing", "keyboard-typing2"]
+
+
+class AgentAmbientAudio(_SpekoModel):
+    clip: AgentAmbientClip
+    # Linear gain in [0, 1]. Defaults to 1.0 (clip's natural level).
+    volume: Optional[float] = None
+
+
+class AgentBackgroundAudio(_SpekoModel):
+    """Per-agent background audio. Today only ambient (continuous loop) is
+    supported. The ambience plays on a separate media track mixed server-side,
+    so it reaches both browser (WebRTC) and phone (SIP) callers."""
+
+    ambient: Optional[AgentAmbientAudio] = None
+
+
+class AgentSpeechNormalization(_SpekoModel):
+    pronunciation_dictionary: Optional[dict[str, str]] = None
+    text_replacements: Optional[dict[str, str]] = None
+
+
+class AgentExtractionField(_SpekoModel):
+    """A caller-defined post-call extraction field. The call-analysis pass
+    fills each from the transcript per ``description``, typed by ``type``;
+    values are delivered under the webhook payload's top-level ``custom_data``
+    object keyed by ``name``. ``options`` is required for ``enum`` fields."""
+
+    name: str
+    type: Literal["string", "number", "boolean", "enum"]
+    description: str
+    options: Optional[list[str]] = None
+
+
+class AgentLifecycleWebhookCreate(_SpekoModel):
+    url: str
+    # Optional per-webhook signing secret. When supplied, this endpoint signs
+    # with its own secret instead of the shared org-level secret.
+    secret: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeaderInput]] = None
+    timeout_ms: Optional[int] = None
+    response_mode: Optional[Literal["sync", "async"]] = None
+    async_ack: Optional[str] = None
+    # Post-call data-extraction fields. Applies to the postCall webhook only.
+    extraction_fields: Optional[list[AgentExtractionField]] = None
+
+
+AgentLifecycleWebhookUpdate = AgentLifecycleWebhookCreate
+
+
+class AgentLifecycleWebhookSerialized(_SpekoModel):
+    url: str
+    secret_ref: str
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeader]] = None
+    timeout_ms: Optional[int] = None
+    response_mode: Optional[Literal["sync", "async"]] = None
+    async_ack: Optional[str] = None
+    extraction_fields: Optional[list[AgentExtractionField]] = None
+
+
+class AgentWebhooksCreate(_SpekoModel):
+    pre_call: Optional[AgentLifecycleWebhookCreate] = None
+    post_call: Optional[AgentLifecycleWebhookCreate] = None
+    status: Optional[AgentLifecycleWebhookCreate] = None
+    # Dedicated call.analysis webhook — LLM analysis results only.
+    analysis: Optional[AgentLifecycleWebhookCreate] = None
+    # Dedicated call.recording webhook — fires when the recording turns
+    # terminal.
+    recording: Optional[AgentLifecycleWebhookCreate] = None
+
+
+AgentWebhooksUpdate = AgentWebhooksCreate
+
+
+class AgentWebhooksSerialized(_SpekoModel):
+    pre_call: Optional[AgentLifecycleWebhookSerialized] = None
+    post_call: Optional[AgentLifecycleWebhookSerialized] = None
+    status: Optional[AgentLifecycleWebhookSerialized] = None
+    analysis: Optional[AgentLifecycleWebhookSerialized] = None
+    recording: Optional[AgentLifecycleWebhookSerialized] = None
+
+
+class AgentPromptVariable(_SpekoModel):
+    """One prompt-variable registry entry. ``default_value`` fills the
+    variable when a session/dial call omits it (empty string = declared
+    optional). Without a default the variable is required per call. Names may
+    not use the reserved ``system.`` namespace."""
+
+    name: str
+    default_value: Optional[str] = None
+    description: Optional[str] = None
+
+
+class AgentRow(_SpekoModel):
+    id: str
+    organization_id: str
+    name: str
+    system_prompt: str
+    voice: Optional[str] = None
+    intent: AgentIntent
+    llm_options: Optional[AgentLlmOptions] = None
+    stack_preferences: Optional[AgentStackPreferences] = None
+    stt_options: Optional[AgentSttOptions] = None
+    background_audio: Optional[AgentBackgroundAudio] = None
+    speech_normalization: Optional[AgentSpeechNormalization] = None
+    # Deprecated: use organization-owned speko.webhooks endpoints.
+    webhooks: Optional[AgentWebhooksSerialized] = None
+    # Prompt-variable registry. Returned on single-agent reads; None = empty.
+    prompt_variables: Optional[list[AgentPromptVariable]] = None
+    created_at: str
+    updated_at: str
+
+
+class AgentCreateParams(_SpekoModel):
+    name: str
+    system_prompt: str
+    voice: Optional[str] = None
+    intent: AgentIntent
+    llm_options: Optional[AgentLlmOptions] = None
+    stack_preferences: Optional[AgentStackPreferences] = None
+    stt_options: Optional[AgentSttOptions] = None
+    background_audio: Optional[AgentBackgroundAudio] = None
+    speech_normalization: Optional[AgentSpeechNormalization] = None
+    # Deprecated: use speko.webhooks.create() after creating the agent.
+    webhooks: Optional[AgentWebhooksCreate] = None
+    # Declare the prompt's {{variables}} with per-agent defaults/descriptions.
+    prompt_variables: Optional[list[AgentPromptVariable]] = None
+
+
+class AgentUpdateParams(_SpekoModel):
+    name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    voice: Optional[str] = None
+    intent: Optional[AgentIntent] = None
+    llm_options: Optional[AgentLlmOptions] = None
+    stack_preferences: Optional[AgentStackPreferences] = None
+    stt_options: Optional[AgentSttOptions] = None
+    background_audio: Optional[AgentBackgroundAudio] = None
+    speech_normalization: Optional[AgentSpeechNormalization] = None
+    webhooks: Optional[AgentWebhooksUpdate] = None
+    prompt_variables: Optional[list[AgentPromptVariable]] = None
+
+
+# --- Agent tools ---------------------------------------------------------------
+
+
+class AgentToolSourceWebhookCreate(_SpekoModel):
+    """Webhook source as sent to ``agents.tools.create``. The plaintext
+    ``secret`` is encrypted server-side; the returned row carries
+    ``secret_ref`` instead."""
+
+    kind: Literal["webhook"] = "webhook"
+    url: str
+    # Plaintext shared secret. Encrypted server-side at write time.
+    secret: str
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeaderInput]] = None
+    timeout_ms: Optional[int] = None
+
+
+class AgentToolSourceWebhookUpdate(_SpekoModel):
+    """Webhook source as sent to ``agents.tools.update``. Unlike the create
+    shape, ``secret`` is optional: omit it to keep the existing encrypted
+    secret untouched, or supply a new one to rotate it."""
+
+    kind: Literal["webhook"] = "webhook"
+    url: str
+    secret: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeaderInput]] = None
+    timeout_ms: Optional[int] = None
+
+
+class AgentToolSourceWebhookSerialized(_SpekoModel):
+    """Webhook source as returned by the API. The plaintext secret never
+    leaves the server — only the ``secret_ref`` pointer is exposed."""
+
+    kind: Literal["webhook"] = "webhook"
+    url: str
+    secret_ref: str
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[AgentWebhookAuthHeader]] = None
+    timeout_ms: Optional[int] = None
+
+
+AgentToolSourceCreate = Union[
+    ChatToolSourceInline,
+    AgentToolSourceWebhookCreate,
+    ChatToolSourceBuiltin,
+    ChatToolSourceIntegration,
+]
+
+AgentToolSourceUpdate = Union[
+    ChatToolSourceInline,
+    AgentToolSourceWebhookUpdate,
+    ChatToolSourceBuiltin,
+    ChatToolSourceIntegration,
+]
+
+AgentToolSourceSerialized = Union[
+    ChatToolSourceInline,
+    AgentToolSourceWebhookSerialized,
+    ChatToolSourceBuiltin,
+    ChatToolSourceIntegration,
+]
+
+
+class AgentToolRow(_SpekoModel):
+    id: str
+    agent_id: str
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    source: AgentToolSourceSerialized = Field(discriminator="kind")
+    # Spoken lead-in behavior before this tool executes.
+    pre_tool_speech: ChatToolPreToolSpeech = "auto"
+    created_at: str
+    updated_at: str
+
+
+class AgentToolCreateParams(_SpekoModel):
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    source: AgentToolSourceCreate = Field(discriminator="kind")
+    # Spoken lead-in behavior before the tool executes. Defaults to `auto`.
+    pre_tool_speech: Optional[ChatToolPreToolSpeech] = None
+
+
+class AgentToolUpdateParams(_SpekoModel):
+    description: Optional[str] = None
+    parameters: Optional[dict[str, Any]] = None
+    source: Optional[AgentToolSourceUpdate] = Field(default=None, discriminator="kind")
+    pre_tool_speech: Optional[ChatToolPreToolSpeech] = None
+
+
+class AgentCallListEntry(_SpekoSnakeModel):
+    id: str
+    call_id: str
+    resource_uri: str
+    agent_id: str
+    status: str
+    kind: str
+    room_name: Optional[str] = None
+    language: str
+    created_at: str
+    ended_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    recording_status: Optional[str] = None
+
+
+class AgentCallListPage(_SpekoSnakeModel):
+    calls: list[AgentCallListEntry]
+    # Mirror of `calls` kept for wire parity with the REST response.
+    entries: list[AgentCallListEntry] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+# --- Calls ----------------------------------------------------------------------
+
+
+class CallTranscriptEntry(_SpekoSnakeModel):
+    id: str
+    index: int
+    source: Literal["user", "agent", "system"]
+    text: str
+    started_at: str
+    ended_at: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    eou_ms: Optional[float] = None
+    llm_ttft_ms: Optional[float] = None
+    tts_ttfb_ms: Optional[float] = None
+    latency_status: Optional[Literal["partial", "complete", "interrupted", "error"]] = None
+    conversational_latency_ms: Optional[float] = None
+
+
+class CallTranscript(_SpekoSnakeModel):
+    entries: list[CallTranscriptEntry]
+
+
+class CallCostLine(_SpekoModel):
+    provider: str
+    metric: str
+    quantity: float
+    key_source: KeySource
+    cost_micro_usd: str
+
+
+class CallReportWebhookDelivery(_SpekoModel):
+    endpoint_id: str
+    delivery_id: str
+    event_id: str
+    delivered: bool
+    status: Optional[int] = None
+    error: Optional[str] = None
+    created_at: str
+
+
+ScheduledCallbackStatus = Literal[
+    "scheduled", "dispatching", "dispatched", "cancelled", "failed"
+]
+
+
+class ScheduledCallback(_SpekoSnakeModel):
+    id: str
+    organization_id: str
+    source_session_id: Optional[str] = None
+    created_session_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    phone_number_id: Optional[str] = None
+    to_number: str
+    from_number: Optional[str] = None
+    scheduled_at: str
+    status: ScheduledCallbackStatus
+    reason: Optional[str] = None
+    instructions: Optional[str] = None
+    summary: Optional[str] = None
+    pipeline_config: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    failure_cause: Optional[str] = None
+    attempted_at: Optional[str] = None
+    dispatched_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class CallReport(_SpekoSnakeModel):
+    session_id: str
+    organization_id: str
+    summary: str
+    outcome: str
+    structured_data: dict[str, Any] = Field(default_factory=dict)
+    transcript: CallTranscript
+    cost_micro_usd: str
+    cost_breakdown: list[CallCostLine] = Field(default_factory=list)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    scheduled_callback: Optional[dict[str, Any]] = None
+    analysis_status: Literal["heuristic", "completed", "failed"]
+    analysis_provider: Optional[str] = None
+    analysis_model: Optional[str] = None
+    analysis_error: Optional[str] = None
+    analysis_completed_at: Optional[str] = None
+    # Canonical per-endpoint results; the singular post_call_webhook_* wire
+    # fields are deprecated aggregates and intentionally not modeled.
+    webhook_deliveries: list[CallReportWebhookDelivery] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class FinalizeCallReportParams(_SpekoModel):
+    force_analysis: Optional[bool] = None
+    retry_webhook: Optional[bool] = None
+
+
+class FinalizeCallReportResult(_SpekoSnakeModel):
+    session_id: str
+    summary: str
+    outcome: str
+    cost_micro_usd: str
+    webhook_deliveries: list[CallReportWebhookDelivery] = Field(default_factory=list)
+
+
+class CallRecording(_SpekoModel):
+    url: str
+
+
+class WebJoinParams(_SpekoModel):
+    # Display name other participants (and transcripts) see for the joiner.
+    display_name: Optional[str] = None
+
+
+class WebJoinResult(_SpekoModel):
+    # LiveKit access token for the live call's room. Mint at click time —
+    # short TTL.
+    token: str
+    # Public LiveKit URL the browser connects to.
+    url: str
+    # Participant identity minted for this join (unique per join).
+    identity: str
+    room_name: str
+    # ISO timestamp the token stops being accepted for NEW connections.
+    expires_at: str
+
+
+class EndCallResult(_SpekoSnakeModel):
+    ok: Literal[True]
+    # 'ending' when teardown was requested; 'already_ended' when the call
+    # was over.
+    status: Literal["ending", "already_ended"]
+    # ISO timestamp, present only with 'already_ended'.
+    ended_at: Optional[str] = None
+
+
+class CallEvent(_SpekoSnakeModel):
+    id: str
+    session_id: Optional[str] = None
+    organization_id: str
+    provider: str
+    event_type: str
+    status: Optional[str] = None
+    failure_cause: Optional[str] = None
+    sip_status_code: Optional[int] = None
+    sip_status: Optional[str] = None
+    occurred_at: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class CallTransfer(_SpekoSnakeModel):
+    id: str
+    session_id: str
+    organization_id: str
+    kind: Literal["blind", "warm"]
+    status: Literal[
+        "requested", "screening", "bridging", "completed", "failed", "cancelled"
+    ]
+    transfer_to: str
+    from_room_name: Optional[str] = None
+    consultation_room_name: Optional[str] = None
+    caller_participant_identity: Optional[str] = None
+    recipient_participant_identity: Optional[str] = None
+    outbound_trunk_id: Optional[str] = None
+    screening_prompt: Optional[str] = None
+    summary: Optional[str] = None
+    failure_cause: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    completed_at: Optional[str] = None
+
+
+class WarmTransferFallbackResult(_SpekoSnakeModel):
+    action: Literal["return_to_assistant", "take_message", "end_call"]
+    message: str
+    take_message_prompt: Optional[str] = None
+    hold_audio_url: Optional[str] = None
+    voicemail_detected: bool = False
+
+
+class CallTransferResponse(CallTransfer):
+    routing_attempts: Optional[list[Optional[CallTransfer]]] = None
+    next_transfer: Optional[CallTransfer] = None
+    fallback: Optional[WarmTransferFallbackResult] = None
+
+
+class CallDetail(_SpekoSnakeModel):
+    id: str
+    call_id: str
+    resource_uri: str
+    agent_id: Optional[str] = None
+    status: str
+    kind: str
+    room_name: Optional[str] = None
+    language: str
+    pipeline_config: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    ended_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    recording_status: Optional[str] = None
+    recording_duration_ms: Optional[float] = None
+    recording_resource_uri: str
+    report: Optional[CallReport] = None
+    transfers: list[CallTransfer] = Field(default_factory=list)
+    transcript: CallTranscript
+    span_tree: dict[str, Any] = Field(default_factory=dict)
+
+
+class BlindTransferParams(_SpekoModel):
+    to: str
+    participant_identity: Optional[str] = None
+    play_dialtone: Optional[bool] = None
+    ringing_timeout: Optional[float] = None
+    headers: Optional[dict[str, str]] = None
+
+
+class WarmTransferDestination(_SpekoModel):
+    to: str
+    label: Optional[str] = None
+    outbound_trunk_id: Optional[str] = None
+    screening_prompt: Optional[str] = None
+    summary: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class WarmTransferFallback(_SpekoModel):
+    strategy: Optional[Literal["return_to_assistant", "take_message", "end_call"]] = None
+    message: Optional[str] = None
+    take_message_prompt: Optional[str] = None
+    hold_audio_url: Optional[str] = None
+
+
+class WarmTransferVoicemailDetection(_SpekoModel):
+    mode: Optional[Literal["agent", "amd", "disabled"]] = None
+    enabled: Optional[bool] = None
+    timeout_seconds: Optional[float] = None
+
+
+class WarmTransferParams(_SpekoModel):
+    to: Optional[str] = None
+    destinations: Optional[list[WarmTransferDestination]] = None
+    from_: Optional[str] = Field(default=None, alias="from")
+    participant_identity: Optional[str] = None
+    outbound_trunk_id: Optional[str] = None
+    screening_prompt: Optional[str] = None
+    summary: Optional[str] = None
+    ringing_timeout: Optional[float] = None
+    wait_until_answered: Optional[bool] = None
+    fallback: Optional[WarmTransferFallback] = None
+    voicemail_detection: Optional[WarmTransferVoicemailDetection] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class CompleteWarmTransferParams(_SpekoModel):
+    recipient_participant_identity: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class CancelWarmTransferParams(_SpekoModel):
+    reason: Optional[str] = None
+    summary: Optional[str] = None
+    try_next: Optional[bool] = None
+    voicemail_detected: Optional[bool] = None
+
+
+class CancelScheduledCallbackParams(_SpekoModel):
+    reason: Optional[str] = None
+
+
+# --- Workspace webhooks ---------------------------------------------------------
+
+WorkspaceWebhookEventType = Literal[
+    "call.pre_call", "call.status", "call.report", "call.analysis", "call.recording"
+]
+
+WebhookEventType = Literal[
+    "call.pre_call",
+    "call.status",
+    "call.report",
+    "call.analysis",
+    "call.recording",
+    "imessage.received",
+    "imessage.reaction_received",
+    "imessage.sent",
+    "imessage.delivered",
+    "imessage.delivery_failed",
+]
+
+WebhookDeliveryStatus = Literal[
+    "pending", "delivering", "succeeded", "failed", "cancelled", "expired"
+]
+
+
+class WebhookEndpointAuthHeaderInput(_SpekoModel):
+    name: str
+    # Write-only plaintext. The server encrypts it and never returns it.
+    value: str
+
+
+class WebhookEndpointAuthHeaderUpdate(_SpekoModel):
+    name: str
+    # Supply to set or rotate; omit to retain the stored value for this
+    # header name.
+    value: Optional[str] = None
+
+
+class WebhookEndpointInput(_SpekoModel):
+    name: str
+    url: str
+    events: list[WorkspaceWebhookEventType]
+    # Defaults to True. When False, agent_ids must contain at least one agent.
+    all_agents: Optional[bool] = None
+    agent_ids: Optional[list[str]] = None
+    filter_tags: Optional[dict[str, str]] = None
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[WebhookEndpointAuthHeaderInput]] = None
+    timeout_ms: Optional[int] = None
+    signing_secret_source: Optional[Literal["workspace", "custom"]] = None
+    # Write-only. Required when signing_secret_source is custom.
+    signing_secret: Optional[str] = None
+    extraction_fields: Optional[list[AgentExtractionField]] = None
+
+
+class WebhookEndpointUpdate(_SpekoModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    events: Optional[list[WorkspaceWebhookEventType]] = None
+    all_agents: Optional[bool] = None
+    agent_ids: Optional[list[str]] = None
+    filter_tags: Optional[dict[str, str]] = None
+    headers: Optional[dict[str, str]] = None
+    auth_headers: Optional[list[WebhookEndpointAuthHeaderUpdate]] = None
+    timeout_ms: Optional[int] = None
+    signing_secret_source: Optional[Literal["workspace", "custom"]] = None
+    signing_secret: Optional[str] = None
+    extraction_fields: Optional[list[AgentExtractionField]] = None
+
+
+class WebhookEndpointAuthHeaderStatus(_SpekoModel):
+    name: str
+    configured: Literal[True]
+
+
+class WebhookEndpoint(_SpekoModel):
+    id: str
+    name: str
+    url: str
+    events: list[WorkspaceWebhookEventType]
+    all_agents: bool
+    agent_ids: list[str] = Field(default_factory=list)
+    filter_tags: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth_headers: list[WebhookEndpointAuthHeaderStatus] = Field(default_factory=list)
+    timeout_ms: int
+    signing_secret_source: Literal["workspace", "custom"]
+    has_custom_signing_secret: bool
+    extraction_fields: list[AgentExtractionField] = Field(default_factory=list)
+    legacy_managed: bool = False
+    created_at: str
+    updated_at: str
+
+
+class WebhookDelivery(_SpekoModel):
+    id: str
+    event_id: str
+    endpoint_id: str
+    endpoint_name: str
+    endpoint_kind: Literal["workspace", "imessage"]
+    endpoint_deleted: bool = False
+    event: WebhookEventType
+    session_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    webhook_tags: dict[str, str] = Field(default_factory=dict)
+    status: WebhookDeliveryStatus
+    attempts: int
+    http_status: Optional[int] = None
+    error: Optional[str] = None
+    occurred_at: str
+    expires_at: str
+    delivered_at: Optional[str] = None
+    created_at: str
+    # False for provider-retried iMessage subscriber deliveries.
+    can_redeliver: bool = True
+
+
+class WebhookDeliveryEndpointOption(_SpekoModel):
+    id: str
+    name: str
+    kind: Literal["workspace", "imessage"]
+    deleted: bool = False
+
+
+class WebhookDeliveryPage(_SpekoModel):
+    data: list[WebhookDelivery]
+    next_cursor: Optional[str] = None
+    endpoint_options: list[WebhookDeliveryEndpointOption] = Field(default_factory=list)
+
+
+class WebhookDeliveryAttempt(_SpekoModel):
+    id: str
+    attempt_number: int
+    trigger: Literal["automatic", "manual"]
+    request_url: str
+    request_headers: dict[str, str] = Field(default_factory=dict)
+    request_body: dict[str, Any] = Field(default_factory=dict)
+    response_status: Optional[int] = None
+    response_body: Optional[str] = None
+    response_truncated: bool = False
+    duration_ms: float
+    error: Optional[str] = None
+    created_at: str
+
+
+class WebhookDeliveryDetail(_SpekoModel):
+    id: str
+    event_id: str
+    endpoint_id: str
+    endpoint_name: str
+    endpoint_kind: Literal["workspace", "imessage"]
+    endpoint_deleted: bool = False
+    event: WebhookEventType
+    session_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    webhook_tags: dict[str, str] = Field(default_factory=dict)
+    status: WebhookDeliveryStatus
+    attempt_count: int
+    http_status: Optional[int] = None
+    error: Optional[str] = None
+    occurred_at: str
+    expires_at: str
+    delivered_at: Optional[str] = None
+    created_at: str
+    can_redeliver: bool = True
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    attempts: list[WebhookDeliveryAttempt] = Field(default_factory=list)
+
+
+class WebhookRedeliverResult(_SpekoModel):
+    delivered: bool
+    http_status: Optional[int] = None
+    error: Optional[str] = None
+
+
+# --- Knowledge bases ------------------------------------------------------------
+
+
+class KnowledgeBaseRow(_SpekoModel):
+    id: str
+    organization_id: str
+    agent_id: str
+    name: str
+    description: Optional[str] = None
+    embedding_model: str
+    document_count: int
+    chunk_count: int
+    created_at: str
+    updated_at: str
+
+
+class KnowledgeBaseCreateParams(_SpekoModel):
+    agent_id: str
+    name: str
+    description: Optional[str] = None
+
+
+KnowledgeBaseDocumentStatus = Literal["pending", "processing", "ready", "failed"]
+
+
+class KnowledgeBaseDocumentRow(_SpekoModel):
+    id: str
+    knowledge_base_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    status: KnowledgeBaseDocumentStatus
+    error_message: Optional[str] = None
+    chunk_count: int = 0
+    metadata: Optional[dict[str, Any]] = None
+    created_at: str
+    updated_at: str
+    ingested_at: Optional[str] = None
+
+
+class KnowledgeBaseDocumentCreateParams(_SpekoModel):
+    filename: str
+    # MIME type. Currently the ingest pipeline accepts text/plain and
+    # text/markdown (plus text/x-markdown, application/x-markdown).
+    content_type: str
+    size_bytes: int
+    metadata: Optional[dict[str, Any]] = None
+
+
+class KnowledgeBaseDocumentUploadSpec(_SpekoModel):
+    # Signed GCS URL valid for expires_in_seconds from issuance.
+    url: str
+    method: Literal["PUT"]
+    # Headers that MUST be sent on the PUT (Content-Type, length-range, etc.).
+    headers: dict[str, str]
+    expires_in_seconds: int
+
+
+class KnowledgeBaseDocumentCreateResult(_SpekoModel):
+    document: KnowledgeBaseDocumentRow
+    upload: KnowledgeBaseDocumentUploadSpec
+
+
+class KnowledgeBaseDocumentUploadParams(_SpekoModel):
+    """Convenience parameter shape for ``knowledge_bases.upload_document``.
+    The wrapper computes ``size_bytes`` from ``data`` automatically."""
+
+    filename: str
+    content_type: str
+    data: bytes
+    metadata: Optional[dict[str, Any]] = None
