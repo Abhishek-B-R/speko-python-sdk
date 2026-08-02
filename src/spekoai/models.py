@@ -1373,8 +1373,38 @@ class CancelScheduledCallbackParams(_SpekoModel):
 
 # --- Workspace webhooks ---------------------------------------------------------
 
+# Two families of event, both subscribable on a workspace endpoint.
+#
+# The `call.pre_call` / `call.status` / `call.report` / `call.analysis` /
+# `call.recording` five describe one AI *voice session* as it progresses. The
+# rest are programmable-voice control events describing a human call leg by leg;
+# their payload carries `call_id`, `control_id` (null for call-scoped events),
+# `event_id` and `occurred_at` alongside the event's own fields.
+#
+# Only `call.report`, `call.analysis` and `call.recording` are retried on
+# delivery failure. Control events are one-shot: they are a live projection of
+# the `call_event` history, which stays readable over the API, so a redelivery
+# would arrive too late to be worth anything.
 WorkspaceWebhookEventType = Literal[
-    "call.pre_call", "call.status", "call.report", "call.analysis", "call.recording"
+    "call.pre_call",
+    "call.status",
+    "call.report",
+    "call.analysis",
+    "call.recording",
+    "call.initiated",
+    "call.ringing",
+    "call.answered",
+    "call.bridged",
+    "call.hold",
+    "call.unhold",
+    "call.mute",
+    "call.unmute",
+    "call.dtmf.sent",
+    "call.transfer.initiated",
+    "call.transfer.completed",
+    "call.transfer.failed",
+    "call.leg.hangup",
+    "call.hangup",
 ]
 
 WebhookEventType = Literal[
@@ -1383,6 +1413,20 @@ WebhookEventType = Literal[
     "call.report",
     "call.analysis",
     "call.recording",
+    "call.initiated",
+    "call.ringing",
+    "call.answered",
+    "call.bridged",
+    "call.hold",
+    "call.unhold",
+    "call.mute",
+    "call.unmute",
+    "call.dtmf.sent",
+    "call.transfer.initiated",
+    "call.transfer.completed",
+    "call.transfer.failed",
+    "call.leg.hangup",
+    "call.hangup",
     "imessage.received",
     "imessage.reaction_received",
     "imessage.sent",
