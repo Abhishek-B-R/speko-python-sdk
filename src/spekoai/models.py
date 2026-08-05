@@ -835,12 +835,22 @@ class AgentSttOptions(_SpekoModel):
     language: Optional[str] = None
 
 
-AgentAmbientClip = Literal["office-ambience", "keyboard-typing", "keyboard-typing2"]
+AgentAmbientClip = Literal[
+    "office-ambience",
+    "city-ambience",
+    "forest-ambience",
+    "crowded-room",
+    "keyboard-typing",
+    "keyboard-typing2",
+]
 
 
 class AgentAmbientAudio(_SpekoModel):
     clip: AgentAmbientClip
-    # Linear gain in [0, 1]. Defaults to 1.0 (clip's natural level).
+    # Linear gain in [0, 16], defaulting to 1.0 — the clip's own recorded level,
+    # which is not the same as "full volume". The built-ins are mastered roughly
+    # 30 dB apart: office-ambience (~-52 LUFS) needs ~5-10 to be audible under
+    # speech, city-ambience is about right at 1, crowded-room distorts past ~1.6.
     volume: Optional[float] = None
 
 
