@@ -436,7 +436,7 @@ class Speko:
         if not api_key:
             raise ValueError(
                 "Speko: api_key is required. Get one at "
-                "https://platform.speko.dev/api-keys"
+                "https://platform.speko.dev/agents/keys"
             )
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -772,7 +772,7 @@ class AsyncSpeko:
         if not api_key:
             raise ValueError(
                 "Speko: api_key is required. Get one at "
-                "https://platform.speko.dev/api-keys"
+                "https://platform.speko.dev/agents/keys"
             )
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
