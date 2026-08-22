@@ -659,6 +659,9 @@ class PhoneNumberRow(_SpekoModel):
     next_charge_at: str
     last_charged_at: Optional[str] = None
     suspended_at: Optional[str] = None
+    billing_suspended_at: Optional[str] = None
+    compliance_suspended_at: Optional[str] = None
+    suspension_reason: Optional[Literal["billing", "compliance"]] = None
     created_at: str
     updated_at: str
 
@@ -752,6 +755,34 @@ class PhoneNumberKybAuthorizedRepresentative(_SpekoModel):
     phone: Optional[str] = None
 
 
+class PhoneNumberKybDeclaration(_SpekoModel):
+    business_name: str
+    use_case: str
+
+
+class PhoneNumberKybUserAttestor(_SpekoModel):
+    kind: Literal["user"]
+    user_id: str
+    name: str
+    email: str
+    organization_role: Optional[str] = None
+
+
+class PhoneNumberKybApiKeyAttestor(_SpekoModel):
+    kind: Literal["api_key"]
+    api_key_id: str
+
+
+PhoneNumberKybAttestor = Union[PhoneNumberKybUserAttestor, PhoneNumberKybApiKeyAttestor]
+
+
+class PhoneNumberKybAttestationContract(_SpekoModel):
+    version: str
+    text: str
+    terms_version: str
+    terms_url: str
+
+
 class PhoneNumberKybDraftParams(_SpekoModel):
     business_profile: PhoneNumberKybBusinessProfile
     authorized_representative: PhoneNumberKybAuthorizedRepresentative
@@ -762,6 +793,13 @@ class PhoneNumberKybSubmitParams(_SpekoModel):
     business_profile: PhoneNumberKybBusinessProfile
     authorized_representative: PhoneNumberKybAuthorizedRepresentative
     attestation_accepted: Literal[True]
+    attestation_version: Optional[str] = None
+
+
+class PhoneNumberKybMinimalSubmitParams(_SpekoModel):
+    declaration: PhoneNumberKybDeclaration
+    attestation_accepted: Literal[True]
+    attestation_version: str
 
 
 class PhoneNumberKybSubmission(_SpekoModel):
@@ -770,8 +808,15 @@ class PhoneNumberKybSubmission(_SpekoModel):
     status: PhoneNumberKybSubmissionStatus
     business_profile: Optional[PhoneNumberKybBusinessProfile] = None
     authorized_representative: Optional[PhoneNumberKybAuthorizedRepresentative] = None
+    declaration: Optional[PhoneNumberKybDeclaration] = None
+    attestor: Optional[PhoneNumberKybAttestor] = None
     attestation_accepted: bool
+    attestation_version: Optional[str] = None
+    attestation_text: Optional[str] = None
+    terms_version: Optional[str] = None
     attested_at: Optional[str] = None
+    access_hold_at: Optional[str] = None
+    access_hold_reason: Optional[Literal["rejected", "revoked"]] = None
     submitted_by_user_id: Optional[str] = None
     submitted_by_email: Optional[str] = None
     submitted_by_api_key_id: Optional[str] = None
@@ -796,6 +841,12 @@ class PhoneNumberKybOverview(_SpekoModel):
     status: PhoneNumberKybStatus
     submission: Optional[PhoneNumberKybSubmission] = None
     prefill: Optional[PhoneNumberKybPrefill] = None
+    declaration_prefill: Optional[PhoneNumberKybDeclaration] = None
+    required_attestation: Optional[PhoneNumberKybAttestationContract] = None
+    attestation_required: Optional[bool] = None
+    compliance_access: Optional[
+        Literal["enabled", "awaiting_attestation", "suspended"]
+    ] = None
 
 
 # --- Agents ---------------------------------------------------------------------

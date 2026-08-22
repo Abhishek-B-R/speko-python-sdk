@@ -428,6 +428,26 @@ def test_kyb_flow(speko):
     sent = json.loads(route.calls.last.request.content)
     assert sent["attestationAccepted"] is True
     assert sent["businessProfile"]["legalName"] == "Acme Inc"
+
+    speko.phone_numbers.submit_kyb(
+        {
+            "declaration": {
+                "business_name": "Acme Inc",
+                "use_case": "Inbound support and opted-in reminders",
+            },
+            "attestation_accepted": True,
+            "attestation_version": "phone-communications-v1",
+        }
+    )
+    minimal_sent = json.loads(route.calls.last.request.content)
+    assert minimal_sent == {
+        "declaration": {
+            "businessName": "Acme Inc",
+            "useCase": "Inbound support and opted-in reminders",
+        },
+        "attestationAccepted": True,
+        "attestationVersion": "phone-communications-v1",
+    }
     assert sent["businessProfile"]["address"]["postalCode"] == "94105"
 
 

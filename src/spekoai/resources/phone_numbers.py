@@ -15,6 +15,7 @@ from spekoai.models import (
     PhoneNumberCreateParams,
     PhoneNumberImportSipTrunkParams,
     PhoneNumberKybDraftParams,
+    PhoneNumberKybMinimalSubmitParams,
     PhoneNumberKybOverview,
     PhoneNumberKybSubmission,
     PhoneNumberKybSubmitParams,
@@ -26,7 +27,20 @@ CreateInput = Union[PhoneNumberCreateParams, dict[str, Any]]
 ImportInput = Union[PhoneNumberImportSipTrunkParams, dict[str, Any]]
 UpdateInput = Union[PhoneNumberUpdateParams, dict[str, Any]]
 KybDraftInput = Union[PhoneNumberKybDraftParams, dict[str, Any]]
-KybSubmitInput = Union[PhoneNumberKybSubmitParams, dict[str, Any]]
+KybSubmitInput = Union[
+    PhoneNumberKybMinimalSubmitParams, PhoneNumberKybSubmitParams, dict[str, Any]
+]
+
+
+def _dump_kyb_submit(params: KybSubmitInput) -> dict[str, Any]:
+    if isinstance(params, (PhoneNumberKybMinimalSubmitParams, PhoneNumberKybSubmitParams)):
+        return params.model_dump(by_alias=True, exclude_unset=True)
+    model_cls = (
+        PhoneNumberKybMinimalSubmitParams
+        if "declaration" in params
+        else PhoneNumberKybSubmitParams
+    )
+    return model_cls.model_validate(params).model_dump(by_alias=True, exclude_unset=True)
 
 
 class PhoneNumbersResource:
@@ -118,7 +132,7 @@ class PhoneNumbersResource:
         must be ``True``."""
         resp = self._client.post(
             "/v1/phone-numbers/kyb/submit",
-            json=dump_params(params, PhoneNumberKybSubmitParams),
+            json=_dump_kyb_submit(params),
         )
         raise_for_status(resp)
         return PhoneNumberKybSubmission.model_validate(resp.json())
@@ -198,7 +212,7 @@ class AsyncPhoneNumbersResource:
     async def submit_kyb(self, params: KybSubmitInput) -> PhoneNumberKybSubmission:
         resp = await self._client.post(
             "/v1/phone-numbers/kyb/submit",
-            json=dump_params(params, PhoneNumberKybSubmitParams),
+            json=_dump_kyb_submit(params),
         )
         raise_for_status(resp)
         return PhoneNumberKybSubmission.model_validate(resp.json())
