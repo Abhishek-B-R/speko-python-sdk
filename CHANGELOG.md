@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenAI provider-direct realtime sessions now honor the negotiated WebRTC
+  transport, including RTP audio, SDP exchange, data-channel events, and
+  billing-sideband binding before media is enabled.
+
 ## [0.2.0] - 2026-07-24
 
 Full feature parity with `@spekoai/sdk` 0.4.x (plus its unreleased surface).

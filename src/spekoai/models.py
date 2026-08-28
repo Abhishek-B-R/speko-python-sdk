@@ -399,7 +399,7 @@ class CreditLedgerPage(_SpekoModel):
 
 # --- Realtime (S2S) ---------------------------------------------------------
 
-RealtimeProvider = Literal["openai", "google", "xai", "inworld", "alibaba", "speko-lab"]
+RealtimeProvider = Literal["openai", "google", "xai"]
 
 
 class RealtimeToolSpec(_SpekoModel):
@@ -411,9 +411,9 @@ class RealtimeToolSpec(_SpekoModel):
 class RealtimeConnectParams(_SpekoModel):
     """Parameters for opening an S2S realtime session.
 
-    Unlike cascade sessions, realtime bypasses LiveKit: the server proxies
-    the client WebSocket directly to the provider (OpenAI Realtime, Gemini
-    Live, xAI Grok Voice, Inworld) so time-to-first-audio stays under ~300 ms.
+    Unlike cascade sessions, realtime bypasses both LiveKit and the Speko
+    media path. Speko mints a short-lived provider credential, then this SDK
+    connects directly to OpenAI Realtime, Gemini Live, or xAI Grok Voice.
     """
 
     # Persisted agent whose workspace webhook routes should receive
@@ -433,15 +433,64 @@ class RealtimeConnectParams(_SpekoModel):
     metadata: Optional[dict[str, object]] = None
     # Max session duration in seconds. Server-capped at 1800 (30 min).
     ttl_seconds: Optional[int] = None
+    # Reuse this value when retrying an ambiguous POST /v1/sessions timeout.
+    # The SDK generates one when omitted.
+    idempotency_key: Optional[str] = None
+
+
+class RealtimeCredential(_SpekoModel):
+    kind: Literal["bearer"]
+    value: str
+    expires_at: str
+
+
+class RealtimeTelemetry(_SpekoModel):
+    endpoint: str
+    token: str
+    flush_interval_ms: int
+
+
+class RealtimeBillingAuthorization(_SpekoModel):
+    mode: Literal["direct_entitlement"]
+    state: Literal["estimated"]
+    maximum_amount_micros: str
+    currency: str
+    renewal_url: Optional[str] = None
+    renewable_until: Optional[str] = None
+
+
+class RealtimeReservation(_SpekoModel):
+    id: str
+    authorized_duration_seconds: int
+    lease_expires_at: str
+    billing: RealtimeBillingAuthorization
+
+
+class RealtimeProviderSession(_SpekoModel):
+    voice: Optional[str] = None
+    instructions: Optional[str] = None
+    temperature: Optional[float] = None
+    tools: Optional[list[RealtimeToolSpec]] = None
 
 
 class RealtimeSessionInfo(_SpekoModel):
     """Raw response from POST /v1/sessions when mode == 's2s'."""
 
     mode: Literal["s2s"]
+    transport: Literal["provider_direct"]
     session_id: str
-    ws_url: str
-    ws_token: str
+    plan_id: str
+    attempt_id: str
+    provider: RealtimeProvider
+    model: str
+    adapter: Literal["openai.realtime.v1", "xai.realtime.v1", "google.live.v1"]
+    provider_transport: Literal["websocket", "webrtc"]
+    endpoint: str
+    sideband_url: Optional[str] = None
+    credential: RealtimeCredential
+    telemetry: RealtimeTelemetry
+    reservation: RealtimeReservation
+    session: Optional[RealtimeProviderSession] = None
     input_sample_rate: Optional[Literal[16000, 24000]] = None
     output_sample_rate: Optional[Literal[16000, 24000]] = None
     expires_at: str

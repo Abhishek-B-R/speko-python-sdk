@@ -16,6 +16,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional, Union
+from uuid import uuid4
 
 import httpx
 
@@ -316,6 +317,9 @@ def _realtime_session_body(params: RealtimeInput) -> dict[str, Any]:
         else RealtimeConnectParams.model_validate(params)
     )
     body = model.model_dump(by_alias=True, exclude_none=True)
+    # Request-only retry control; it is carried as the standard HTTP header,
+    # never as provider session configuration.
+    body.pop("idempotencyKey", None)
     # The create-session schema expects the realtime config under `s2s` and a
     # top-level `mode` discriminator; agentId/webhookTags/metadata/ttlSeconds
     # stay top-level.
@@ -1032,10 +1036,9 @@ class AsyncSpeko:
         """Open a speech-to-speech (S2S) session.
 
         Posts ``/v1/sessions`` with ``mode='s2s'`` to mint a short-lived
-        WebSocket token, then opens the WS straight to the Speko proxy,
-        which bridges to the underlying provider (OpenAI Realtime, Gemini
-        Live, xAI Grok Voice, Inworld). Skips LiveKit entirely so TTFT stays
-        under ~300 ms.
+        provider credential, then opens the provider transport directly.
+        Speko remains on the setup and billing paths only; audio does not
+        traverse a Speko proxy.
 
         Example::
 
@@ -1047,8 +1050,15 @@ class AsyncSpeko:
                 async for frame in session:
                     ...
         """
+        model = (
+            params
+            if isinstance(params, RealtimeConnectParams)
+            else RealtimeConnectParams.model_validate(params)
+        )
         resp = await self._client.post(
-            "/v1/sessions", json=_realtime_session_body(params)
+            "/v1/sessions",
+            json=_realtime_session_body(model),
+            headers={"Idempotency-Key": model.idempotency_key or str(uuid4())},
         )
         raise_for_status(resp)
         info = RealtimeSessionInfo.model_validate(resp.json())
