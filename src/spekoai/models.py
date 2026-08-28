@@ -519,6 +519,12 @@ class VoiceDialParams(_SpekoModel):
     # Liquid templates at call-create time. Unresolved names fail the request
     # with 400 MISSING_TEMPLATE_VARIABLES. Keys under `system.` are rejected.
     variables: Optional[dict[str, str]] = None
+    # Per-call values for TOOLS ONLY (e.g. an access token scoped to the
+    # callee, a per-tenant base URL). Never rendered into the prompt or the
+    # model's context; stored encrypted and released only to tool execution
+    # (`session.secrets.<name>` in custom-code tools, `{{name}}` in webhook
+    # url/headers). Identifier-shaped names; up to 32 entries, 6 chars-4 KB each.
+    tool_secrets: Optional[dict[str, str]] = None
     llm: Optional[VoiceDialLlmOptions] = None
     tts_options: Optional[VoiceDialTtsOptions] = None
     stt_options: Optional[SttOptions] = None
