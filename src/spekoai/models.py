@@ -201,6 +201,11 @@ class SttOptions(_SpekoModel):
     language; ``language`` here only changes the provider's STT stream."""
 
     keywords: Optional[list[str]] = None
+    # Free-text transcription context (domain, names, expected phrases), up to
+    # 2000 chars. Honored only by prompt-capable STT models; others ignore it.
+    # Same field as ``AgentSttOptions.prompt`` — per-call value overrides the
+    # agent's on ``voice.dial``.
+    prompt: Optional[str] = None
     language: Optional[str] = None
 
 
@@ -936,6 +941,10 @@ class AgentStackPreferences(_SpekoModel):
 class AgentSttOptions(_SpekoModel):
     # Vocabulary keywords forwarded to whichever STT provider the router picks.
     keywords: Optional[list[str]] = None
+    # Free-text transcription context (domain, names, expected phrases), max
+    # 2000 chars. Honored only by prompt-capable STT models (OpenAI
+    # gpt-4o-transcribe family, AssemblyAI Universal-3 Pro tiers).
+    prompt: Optional[str] = None
     # STT stream-language override ('en', 'es-MX', Deepgram's 'multi', or
     # 'auto'). Never affects stack routing — that keeps the agent language.
     language: Optional[str] = None

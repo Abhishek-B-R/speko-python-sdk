@@ -279,6 +279,7 @@ def test_voice_dial_wire_shape(speko):
             "variables": {"customer": "Mr. Lee"},
             "turn_handling": {"greet_first": False},
             "max_duration_seconds": 600,
+            "stt_options": {"keywords": ["Lee"], "prompt": "Returning customer, order follow-up."},
         }
     )
     assert result.from_ == "+16465550000"
@@ -289,6 +290,7 @@ def test_voice_dial_wire_shape(speko):
         "variables": {"customer": "Mr. Lee"},
         "turnHandling": {"greetFirst": False},
         "maxDurationSeconds": 600,
+        "sttOptions": {"keywords": ["Lee"], "prompt": "Returning customer, order follow-up."},
     }
 
 
