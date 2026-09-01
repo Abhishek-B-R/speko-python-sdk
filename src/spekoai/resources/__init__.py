@@ -18,6 +18,7 @@ from spekoai.resources.phone_numbers import (
     PhoneNumbersResource,
 )
 from spekoai.resources.sessions import AsyncSessionsResource, SessionsResource
+from spekoai.resources.sms import AsyncSmsResource, SmsResource
 from spekoai.resources.usage import AsyncUsageResource, UsageResource
 from spekoai.resources.voice import AsyncVoiceResource, VoiceResource
 from spekoai.resources.voices import AsyncVoicesResource, VoicesResource
@@ -45,6 +46,8 @@ __all__ = [
     "PhoneNumbersResource",
     "AsyncSessionsResource",
     "SessionsResource",
+    "AsyncSmsResource",
+    "SmsResource",
     "AsyncUsageResource",
     "UsageResource",
     "AsyncVoiceResource",

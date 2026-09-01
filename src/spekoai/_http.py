@@ -74,6 +74,16 @@ def decode_sse_block(block: str) -> tuple[str, Any]:
     return event, data
 
 
+def decode_sse_block_with_id(block: str) -> tuple[str, Optional[str], Any]:
+    """Decode an SSE frame while preserving its resumable ``id`` field."""
+    event, data = decode_sse_block(block)
+    event_id: Optional[str] = None
+    for line in block.splitlines():
+        if line.startswith("id:"):
+            event_id = line[len("id:") :].strip() or None
+    return event, event_id, data
+
+
 def iter_sse(chunks: Iterable[str]) -> Iterator[tuple[str, Any]]:
     buffer = ""
     for chunk in chunks:
@@ -96,6 +106,32 @@ async def aiter_sse(chunks: AsyncIterator[str]) -> AsyncIterator[tuple[str, Any]
                 yield decode_sse_block(block)
     if buffer.strip():
         yield decode_sse_block(buffer)
+
+
+def iter_sse_with_id(chunks: Iterable[str]) -> Iterator[tuple[str, Optional[str], Any]]:
+    buffer = ""
+    for chunk in chunks:
+        buffer += chunk
+        while "\n\n" in buffer:
+            block, buffer = buffer.split("\n\n", 1)
+            if block.strip():
+                yield decode_sse_block_with_id(block)
+    if buffer.strip():
+        yield decode_sse_block_with_id(buffer)
+
+
+async def aiter_sse_with_id(
+    chunks: AsyncIterator[str],
+) -> AsyncIterator[tuple[str, Optional[str], Any]]:
+    buffer = ""
+    async for chunk in chunks:
+        buffer += chunk
+        while "\n\n" in buffer:
+            block, buffer = buffer.split("\n\n", 1)
+            if block.strip():
+                yield decode_sse_block_with_id(block)
+    if buffer.strip():
+        yield decode_sse_block_with_id(buffer)
 
 
 def dump_params(params: Union[ModelT, dict[str, Any]], model_cls: type[ModelT]) -> dict[str, Any]:

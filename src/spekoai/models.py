@@ -712,6 +712,11 @@ class PhoneNumberRow(_SpekoModel):
     sms_campaign_id: Optional[str] = None
     sms_assignment_status: Optional[PhoneNumberSmsAssignmentStatus] = None
     sms_assignment_updated_at: Optional[str] = None
+    telnyx_messaging_profile_id: Optional[str] = None
+    sms_messaging_profile_status: Literal["pending", "ready", "failed"] = "pending"
+    sms_messaging_profile_updated_at: Optional[str] = None
+    sms_messaging_profile_error: Optional[str] = None
+    sms_automation_enabled: bool = False
     # 1:1 link to a persisted agent. When set, inbound calls hydrate
     # pipeline config from the agent row.
     agent_id: Optional[str] = None
@@ -760,6 +765,7 @@ class PhoneNumberUpdateParams(_SpekoModel):
     label: Optional[str] = None
     # Pass None explicitly to unlink, a string to relink.
     agent_id: Optional[str] = None
+    sms_automation_enabled: Optional[bool] = None
 
 
 class AvailablePhoneNumberRegion(_SpekoModel):
@@ -1530,6 +1536,14 @@ WorkspaceWebhookEventType = Literal[
     "call.transfer.failed",
     "call.leg.hangup",
     "call.hangup",
+    "sms.received",
+    "sms.accepted",
+    "sms.sent",
+    "sms.delivered",
+    "sms.delivery_failed",
+    "sms.submission_unknown",
+    "sms.opted_out",
+    "sms.opted_in",
 ]
 
 WebhookEventType = Literal[
@@ -1557,6 +1571,14 @@ WebhookEventType = Literal[
     "imessage.sent",
     "imessage.delivered",
     "imessage.delivery_failed",
+    "sms.received",
+    "sms.accepted",
+    "sms.sent",
+    "sms.delivered",
+    "sms.delivery_failed",
+    "sms.submission_unknown",
+    "sms.opted_out",
+    "sms.opted_in",
 ]
 
 WebhookDeliveryStatus = Literal[
@@ -1592,6 +1614,7 @@ class WebhookEndpointInput(_SpekoModel):
     # Write-only. Required when signing_secret_source is custom.
     signing_secret: Optional[str] = None
     extraction_fields: Optional[list[AgentExtractionField]] = None
+    content_mode: Optional[Literal["full", "metadata_only"]] = None
 
 
 class WebhookEndpointUpdate(_SpekoModel):
@@ -1607,6 +1630,7 @@ class WebhookEndpointUpdate(_SpekoModel):
     signing_secret_source: Optional[Literal["workspace", "custom"]] = None
     signing_secret: Optional[str] = None
     extraction_fields: Optional[list[AgentExtractionField]] = None
+    content_mode: Optional[Literal["full", "metadata_only"]] = None
 
 
 class WebhookEndpointAuthHeaderStatus(_SpekoModel):
@@ -1628,6 +1652,7 @@ class WebhookEndpoint(_SpekoModel):
     signing_secret_source: Literal["workspace", "custom"]
     has_custom_signing_secret: bool
     extraction_fields: list[AgentExtractionField] = Field(default_factory=list)
+    content_mode: Literal["full", "metadata_only"] = "full"
     legacy_managed: bool = False
     created_at: str
     updated_at: str
@@ -1785,3 +1810,239 @@ class KnowledgeBaseDocumentUploadParams(_SpekoModel):
     content_type: str
     data: bytes
     metadata: Optional[dict[str, Any]] = None
+
+
+# --- SMS messaging -------------------------------------------------------------
+
+SmsMessageStatus = Literal[
+    "queued",
+    "scheduled",
+    "submitting",
+    "accepted",
+    "sent",
+    "delivered",
+    "delivery_failed",
+    "rejected",
+    "submission_unknown",
+    "canceled",
+    "received",
+]
+SmsMessageDirection = Literal["inbound", "outbound"]
+SmsMessageOrigin = Literal[
+    "api", "dashboard", "agent_tool", "agent_auto_reply", "telnyx"
+]
+SmsConsentSource = Literal[
+    "inbound", "api", "keyword", "webform", "paper", "verbal", "import"
+]
+
+
+class SmsSegmentEstimate(_SpekoSnakeModel):
+    encoding: Literal["gsm7", "ucs2"]
+    segments: int
+    units: int
+    per_segment: int
+
+
+class SmsMessage(_SpekoSnakeModel):
+    id: str
+    conversation_id: str
+    batch_id: Optional[str] = None
+    from_phone_number_id: str
+    direction: SmsMessageDirection
+    origin: SmsMessageOrigin
+    from_: str = Field(alias="from")
+    to: str
+    text: Optional[str] = None
+    campaign_id: Optional[str] = None
+    brand_id: Optional[str] = None
+    campaign_snapshot: Optional[dict[str, Any]] = None
+    consent_id: Optional[str] = None
+    consent_basis: Optional[str] = None
+    recipient_timezone: Optional[str] = None
+    requested_send_at: Optional[str] = None
+    effective_send_at: Optional[str] = None
+    terminal_at: Optional[str] = None
+    status: SmsMessageStatus
+    provider_status: Optional[str] = None
+    encoding: Optional[Literal["gsm7", "ucs2"]] = None
+    estimated_segments: int
+    segment_count: int
+    estimated: SmsSegmentEstimate
+    charged_micro_usd: str
+    provider_cost_micro_usd: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[dict[str, Any]] = None
+    created_at: str
+    updated_at: str
+
+
+class SmsSendParams(_SpekoSnakeModel):
+    from_phone_number_id: str
+    to: str
+    text: str
+    send_at: Optional[str] = None
+    consent_id: Optional[str] = None
+    recipient_timezone: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class SmsConversationSendParams(_SpekoSnakeModel):
+    text: str
+    send_at: Optional[str] = None
+    consent_id: Optional[str] = None
+    recipient_timezone: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class SmsBatchRecipient(_SpekoSnakeModel):
+    to: str
+    text: str
+    consent_id: Optional[str] = None
+    recipient_timezone: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class SmsBatchCreateParams(_SpekoSnakeModel):
+    from_phone_number_id: str
+    recipients: list[SmsBatchRecipient]
+    send_at: Optional[str] = None
+
+
+class SmsBatch(_SpekoSnakeModel):
+    id: str
+    from_phone_number_id: str
+    status: Literal[
+        "queued",
+        "scheduled",
+        "processing",
+        "completed",
+        "partially_failed",
+        "failed",
+        "canceled",
+    ]
+    requested_send_at: Optional[str] = None
+    total_count: int
+    accepted_count: int
+    rejected_count: int
+    delivered_count: int
+    failed_count: int
+    canceled_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class SmsConversation(_SpekoSnakeModel):
+    id: str
+    phone_number_id: str
+    remote_phone_number: str
+    campaign_id: Optional[str] = None
+    campaign_snapshot: Optional[dict[str, Any]] = None
+    status: Literal["open", "closed", "spam"]
+    automation_status: Literal["disabled", "enabled", "paused"]
+    assigned_user_id: Optional[str] = None
+    assigned_agent_id: Optional[str] = None
+    unread_count: int
+    recipient_timezone: Optional[str] = None
+    last_inbound_at: Optional[str] = None
+    last_outbound_at: Optional[str] = None
+    last_message_at: str
+    content_redacted_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class SmsConversationUpdate(_SpekoSnakeModel):
+    status: Optional[Literal["open", "closed", "spam"]] = None
+    assigned_user_id: Optional[str] = None
+    assigned_agent_id: Optional[str] = None
+    automation_status: Optional[Literal["disabled", "enabled", "paused"]] = None
+    recipient_timezone: Optional[str] = None
+
+
+class SmsConversationNote(_SpekoSnakeModel):
+    id: str
+    conversation_id: str
+    body: Optional[str] = None
+    created_by_user_id: str
+    redacted_at: Optional[str] = None
+    created_at: str
+
+
+class SmsConsentInput(_SpekoSnakeModel):
+    recipient: str
+    campaign_id: str
+    source: SmsConsentSource
+    proof_reference: Optional[str] = None
+    proof: Optional[str] = None
+    timezone: Optional[str] = None
+    captured_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class SmsConsent(_SpekoSnakeModel):
+    id: str
+    recipient: str
+    campaign_id: str
+    status: Literal["active", "revoked", "expired"]
+    source: SmsConsentSource
+    proof_reference: Optional[str] = None
+    proof_hash: Optional[str] = None
+    timezone: Optional[str] = None
+    captured_at: str
+    expires_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    revoked_reason: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class SmsSuppression(_SpekoSnakeModel):
+    id: str
+    recipient: str
+    status: Literal["suppressed", "lifted"]
+    keyword: Optional[str] = None
+    source_phone_number_id: Optional[str] = None
+    source_message_provider_id: Optional[str] = None
+    suppressed_at: str
+    lifted_at: Optional[str] = None
+    updated_at: str
+
+
+class SmsSettings(_SpekoSnakeModel):
+    messaging_profile_id: Optional[str] = None
+    messaging_profile_status: str
+    webhook_config_version: int
+    opt_out_config_version: int
+    help_message: str
+    opt_out_message: str
+    opt_in_message: str
+    retention_days: int
+    quiet_hours_start: str
+    quiet_hours_end: str
+    default_timezone: Optional[str] = None
+    default_automation_enabled: bool
+    last_synced_at: Optional[str] = None
+    last_error: Optional[str] = None
+    updated_at: str
+
+
+class SmsSettingsUpdate(_SpekoSnakeModel):
+    help_message: Optional[str] = None
+    opt_out_message: Optional[str] = None
+    opt_in_message: Optional[str] = None
+    retention_days: Optional[int] = None
+    quiet_hours_start: Optional[str] = None
+    quiet_hours_end: Optional[str] = None
+    default_timezone: Optional[str] = None
+    default_automation_enabled: Optional[bool] = None
+
+
+class SmsStreamEvent(_SpekoSnakeModel):
+    event: str
+    id: Optional[str] = None
+    message_id: str
+    conversation_id: str
+    status: SmsMessageStatus
+    occurred_at: str

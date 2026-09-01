@@ -7,7 +7,7 @@ The client mirrors the TypeScript SDK's surface:
 - ``Speko.complete(messages=..., intent=...)`` / ``complete_stream``
 - Resource namespaces: ``usage``, ``credits``, ``voice``, ``voices``,
   ``sessions``, ``phone_numbers``, ``agents``, ``knowledge_bases``,
-  ``calls``, ``callbacks``, ``webhooks``.
+  ``calls``, ``callbacks``, ``webhooks``, ``sms``.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ from spekoai.resources import (
     AsyncKnowledgeBasesResource,
     AsyncPhoneNumbersResource,
     AsyncSessionsResource,
+    AsyncSmsResource,
     AsyncUsageResource,
     AsyncVoiceResource,
     AsyncVoicesResource,
@@ -73,6 +74,7 @@ from spekoai.resources import (
     KnowledgeBasesResource,
     PhoneNumbersResource,
     SessionsResource,
+    SmsResource,
     UsageResource,
     VoiceResource,
     VoicesResource,
@@ -109,11 +111,7 @@ def _intent_from_fields(
 
 
 def _intent_from_input(intent: IntentInput) -> dict[str, Any]:
-    model = (
-        intent
-        if isinstance(intent, RoutingIntent)
-        else RoutingIntent.model_validate(intent)
-    )
+    model = intent if isinstance(intent, RoutingIntent) else RoutingIntent.model_validate(intent)
     return model.model_dump(by_alias=True, exclude_none=True)
 
 
@@ -233,9 +231,7 @@ def _transcribe_headers(
         "X-Speko-Intent": json.dumps(intent, separators=(",", ":")),
     }
     if constraints is not None:
-        headers["X-Speko-Constraints"] = json.dumps(
-            constraints, separators=(",", ":")
-        )
+        headers["X-Speko-Constraints"] = json.dumps(constraints, separators=(",", ":"))
     headers.update(_session_id_header(session_id))
     stt_options: dict[str, Any] = {}
     if keywords:
@@ -249,11 +245,7 @@ def _transcribe_headers(
 
 def _parse_synth_headers(hdrs: httpx.Headers) -> dict[str, Any]:
     raw_failover = hdrs.get("x-speko-failover-count")
-    failover_count = (
-        int(raw_failover)
-        if raw_failover is not None and raw_failover.isdigit()
-        else 0
-    )
+    failover_count = int(raw_failover) if raw_failover is not None and raw_failover.isdigit() else 0
     return {
         "content_type": hdrs.get("content-type", "application/octet-stream"),
         "provider": hdrs.get("x-speko-provider", "unknown"),
@@ -429,6 +421,7 @@ class Speko:
     calls: CallsResource
     callbacks: CallbacksResource
     webhooks: WebhooksResource
+    sms: SmsResource
 
     def __init__(
         self,
@@ -439,8 +432,7 @@ class Speko:
     ) -> None:
         if not api_key:
             raise ValueError(
-                "Speko: api_key is required. Get one at "
-                "https://platform.speko.dev/agents/keys"
+                "Speko: api_key is required. Get one at https://platform.speko.dev/agents/keys"
             )
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -458,6 +450,7 @@ class Speko:
         self.calls = CallsResource(self._client)
         self.callbacks = CallbacksResource(self._client)
         self.webhooks = WebhooksResource(self._client)
+        self.sms = SmsResource(self._client)
 
     def close(self) -> None:
         self._client.close()
@@ -521,9 +514,7 @@ class Speko:
             if isinstance(event, TranscribeStreamDone):
                 done = event
         if done is None:
-            raise SpekoApiError(
-                "Transcribe stream ended without a done event", 200, "STREAM_ENDED"
-            )
+            raise SpekoApiError("Transcribe stream ended without a done event", 200, "STREAM_ENDED")
         return TranscribeResult.model_validate(done.model_dump(by_alias=True))
 
     def transcribe_stream(
@@ -600,9 +591,7 @@ class Speko:
             "/v1/synthesize", json=body, headers=_session_id_header(session_id)
         )
         raise_for_status(resp)
-        return SynthesizeResult(
-            audio=resp.content, **_parse_synth_headers(resp.headers)
-        )
+        return SynthesizeResult(audio=resp.content, **_parse_synth_headers(resp.headers))
 
     def synthesize_stream(
         self,
@@ -693,9 +682,7 @@ class Speko:
             if isinstance(event, CompleteStreamDone):
                 done = event
         if done is None:
-            raise SpekoApiError(
-                "Complete stream ended without a done event", 200, "STREAM_ENDED"
-            )
+            raise SpekoApiError("Complete stream ended without a done event", 200, "STREAM_ENDED")
         return CompleteResult.model_validate(done.model_dump(by_alias=True))
 
     def complete_stream(
@@ -765,6 +752,7 @@ class AsyncSpeko:
     calls: AsyncCallsResource
     callbacks: AsyncCallbacksResource
     webhooks: AsyncWebhooksResource
+    sms: AsyncSmsResource
 
     def __init__(
         self,
@@ -775,8 +763,7 @@ class AsyncSpeko:
     ) -> None:
         if not api_key:
             raise ValueError(
-                "Speko: api_key is required. Get one at "
-                "https://platform.speko.dev/agents/keys"
+                "Speko: api_key is required. Get one at https://platform.speko.dev/agents/keys"
             )
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -794,6 +781,7 @@ class AsyncSpeko:
         self.calls = AsyncCallsResource(self._client)
         self.callbacks = AsyncCallbacksResource(self._client)
         self.webhooks = AsyncWebhooksResource(self._client)
+        self.sms = AsyncSmsResource(self._client)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -835,9 +823,7 @@ class AsyncSpeko:
             if isinstance(event, TranscribeStreamDone):
                 done = event
         if done is None:
-            raise SpekoApiError(
-                "Transcribe stream ended without a done event", 200, "STREAM_ENDED"
-            )
+            raise SpekoApiError("Transcribe stream ended without a done event", 200, "STREAM_ENDED")
         return TranscribeResult.model_validate(done.model_dump(by_alias=True))
 
     async def transcribe_stream(
@@ -903,9 +889,7 @@ class AsyncSpeko:
             "/v1/synthesize", json=body, headers=_session_id_header(session_id)
         )
         raise_for_status(resp)
-        return SynthesizeResult(
-            audio=resp.content, **_parse_synth_headers(resp.headers)
-        )
+        return SynthesizeResult(audio=resp.content, **_parse_synth_headers(resp.headers))
 
     async def synthesize_stream(
         self,
@@ -924,10 +908,10 @@ class AsyncSpeko:
     ) -> AsyncSynthesizeStream:
         """Synthesize text to audio, streaming chunks (async)::
 
-            stream = await speko.synthesize_stream("Hello", language="en")
-            async with stream:
-                async for chunk in stream:
-                    play(chunk)
+        stream = await speko.synthesize_stream("Hello", language="en")
+        async with stream:
+            async for chunk in stream:
+                play(chunk)
         """
         intent = _intent_from_fields(language, region, optimize_for)
         body = _synthesize_body(
@@ -988,9 +972,7 @@ class AsyncSpeko:
             if isinstance(event, CompleteStreamDone):
                 done = event
         if done is None:
-            raise SpekoApiError(
-                "Complete stream ended without a done event", 200, "STREAM_ENDED"
-            )
+            raise SpekoApiError("Complete stream ended without a done event", 200, "STREAM_ENDED")
         return CompleteResult.model_validate(done.model_dump(by_alias=True))
 
     async def complete_stream(
