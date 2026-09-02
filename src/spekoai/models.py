@@ -1075,6 +1075,10 @@ class AgentRow(_SpekoModel):
     speech_normalization: Optional[AgentSpeechNormalization] = None
     # Deprecated: use organization-owned speko.webhooks endpoints.
     webhooks: Optional[AgentWebhooksSerialized] = None
+    # Post-call extraction schema on the agent itself - no webhook required.
+    # Merged with webhooks.postCall.extraction_fields; the agent-level
+    # definition wins on a name collision.
+    extraction_fields: list[AgentExtractionField] = Field(default_factory=list)
     # Prompt-variable registry. Returned on single-agent reads; None = empty.
     prompt_variables: Optional[list[AgentPromptVariable]] = None
     created_at: str
@@ -1093,6 +1097,10 @@ class AgentCreateParams(_SpekoModel):
     speech_normalization: Optional[AgentSpeechNormalization] = None
     # Deprecated: use speko.webhooks.create() after creating the agent.
     webhooks: Optional[AgentWebhooksCreate] = None
+    # Post-call extraction schema on the agent itself - no webhook required.
+    # Merged with webhooks.postCall.extraction_fields; the agent-level
+    # definition wins on a name collision.
+    extraction_fields: Optional[list[AgentExtractionField]] = None
     # Declare the prompt's {{variables}} with per-agent defaults/descriptions.
     prompt_variables: Optional[list[AgentPromptVariable]] = None
 
@@ -1108,6 +1116,11 @@ class AgentUpdateParams(_SpekoModel):
     background_audio: Optional[AgentBackgroundAudio] = None
     speech_normalization: Optional[AgentSpeechNormalization] = None
     webhooks: Optional[AgentWebhooksUpdate] = None
+    # Post-call extraction schema on the agent itself - no webhook required.
+    # Merged with webhooks.postCall.extraction_fields; the agent-level
+    # definition wins on a name collision.
+    # None leaves the schema untouched; [] clears it.
+    extraction_fields: Optional[list[AgentExtractionField]] = None
     prompt_variables: Optional[list[AgentPromptVariable]] = None
 
 
@@ -1303,6 +1316,7 @@ class CallReport(_SpekoSnakeModel):
     summary: str
     outcome: str
     structured_data: dict[str, Any] = Field(default_factory=dict)
+    custom_data: dict[str, Any] = Field(default_factory=dict)
     transcript: CallTranscript
     cost_micro_usd: str
     cost_breakdown: list[CallCostLine] = Field(default_factory=list)
