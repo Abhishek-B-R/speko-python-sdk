@@ -295,6 +295,45 @@ def test_voice_dial_wire_shape(speko):
 
 
 @respx.mock
+def test_voice_dial_turn_handling_audio_options_wire_shape(speko):
+    route = respx.post(f"{BASE}/v1/sessions/phone").respond(
+        json={
+            "sessionId": "sess_2",
+            "callControlId": "cc_2",
+            "roomName": "room",
+            "status": "dialing",
+            "to": "+12015551234",
+            "from": "+16465550000",
+        }
+    )
+    speko.voice.dial(
+        {
+            "to": "+12015551234",
+            "agent_id": "ag_1",
+            "turn_handling": {
+                "vad": {"provider": "ai-coustics"},
+                "noise_cancellation": {"enabled": True, "model": "quail-voice-focus"},
+            },
+        }
+    )
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["turnHandling"] == {
+        "vad": {"provider": "ai-coustics"},
+        "noiseCancellation": {"enabled": True, "model": "quail-voice-focus"},
+    }
+
+    speko.voice.dial(
+        {
+            "to": "+12015551234",
+            "agent_id": "ag_1",
+            "turn_handling": {"noise_cancellation": {"enabled": False}},
+        }
+    )
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["turnHandling"] == {"noiseCancellation": {"enabled": False}}
+
+
+@respx.mock
 def test_voices_and_sessions_transcript(speko):
     respx.get(f"{BASE}/v1/voices").respond(
         json={

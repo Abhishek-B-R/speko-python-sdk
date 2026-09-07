@@ -525,11 +525,28 @@ class TurnHandlingInterruption(_SpekoModel):
     min_words: Optional[int] = None
 
 
+class TurnHandlingVad(_SpekoModel):
+    """Local VAD for cascaded calls. Omit to use Silero."""
+
+    provider: Literal["silero", "ai-coustics"]
+
+
+class TurnHandlingNoiseCancellation(_SpekoModel):
+    """Caller-leg input enhancement (ai-coustics). Omit for the platform
+    default; ``enabled=False`` turns it off; ``model`` is plain Quail (default)
+    or Quail Voice Focus (primary-speaker isolation, explicit opt-in)."""
+
+    enabled: bool
+    model: Optional[Literal["quail", "quail-voice-focus"]] = None
+
+
 class TurnHandling(_SpekoModel):
     """Per-call turn-taking overrides. ``greet_first`` defaults ON for
     outbound: the greeting plays immediately while AMD classifies in the
     background. Pass False to hold the greeting for the AMD verdict."""
 
+    vad: Optional[TurnHandlingVad] = None
+    noise_cancellation: Optional[TurnHandlingNoiseCancellation] = None
     profile: Optional[Literal["conversational", "ivr", "ivr_patient"]] = None
     endpointing: Optional[TurnHandlingEndpointing] = None
     interruption: Optional[TurnHandlingInterruption] = None
