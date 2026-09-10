@@ -12,6 +12,7 @@ The client mirrors the TypeScript SDK's surface:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, Optional, Union
@@ -53,7 +54,7 @@ from spekoai.models import (
     TranscribeStreamMeta,
     TranscribeStreamTranscript,
 )
-from spekoai.realtime import AsyncRealtimeSession, open_realtime_session
+from spekoai.realtime import AsyncRealtimeSession, _drain_background_tasks, open_realtime_session
 from spekoai.resources import (
     AgentsResource,
     AsyncAgentsResource,
@@ -763,6 +764,7 @@ class AsyncSpeko:
             timeout=timeout,
             headers=_default_headers(api_key),
         )
+        self._realtime_tasks: set[asyncio.Task[None]] = set()
         self.usage = AsyncUsageResource(self._client)
         self.credits = AsyncCreditsResource(self._client)
         self.voice = AsyncVoiceResource(self._client)
@@ -776,8 +778,18 @@ class AsyncSpeko:
         self.webhooks = AsyncWebhooksResource(self._client)
         self.sms = AsyncSmsResource(self._client)
 
-    async def close(self) -> None:
-        await self._client.aclose()
+    async def close(self, *, realtime_timeout: float = 5.0) -> None:
+        """Close HTTP resources after a bounded realtime cleanup/report drain.
+
+        Use the client context manager, or await this method before stopping
+        the event loop. The timeout covers all pending realtime work together.
+        Delivery is best effort and is not guaranteed after the deadline or
+        event-loop termination. A timeout does not cancel provider cleanup.
+        """
+        try:
+            await _drain_background_tasks(self._realtime_tasks, realtime_timeout)
+        finally:
+            await self._client.aclose()
 
     async def __aenter__(self) -> AsyncSpeko:
         return self
@@ -1037,4 +1049,4 @@ class AsyncSpeko:
         )
         raise_for_status(resp)
         info = RealtimeSessionInfo.model_validate(resp.json())
-        return await open_realtime_session(info)
+        return await open_realtime_session(info, _pending_tasks=self._realtime_tasks)

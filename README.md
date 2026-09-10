@@ -131,6 +131,12 @@ endpoints + delivery logs), `speko.voices` (TTS voice catalog),
 mirror on `AsyncSpeko`; speech-to-speech realtime sessions are async-only via
 `await speko.connect_realtime(...)`.
 
+Close realtime sessions before leaving `async with AsyncSpeko(...)`. Client
+shutdown gives pending provider cleanup and terminal reports up to five seconds
+to finish. Explicit shutdown can use `await speko.close(realtime_timeout=5.0)`.
+Session close never waits for telemetry. Report delivery is best effort and is
+not guaranteed after the deadline or event-loop termination.
+
 ## Documentation
 
 Full API reference and guides: <https://docs.speko.dev/sdk-python/overview>

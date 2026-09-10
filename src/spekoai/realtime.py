@@ -24,9 +24,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from fractions import Fraction
 from typing import Any, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -43,6 +44,42 @@ from spekoai.models import RealtimeSessionInfo
 RealtimeFrame = dict[str, Any]
 _WireMessage = Union[str, bytes]
 _CLOSED = object()
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _start_background_task(
+    coroutine: Coroutine[Any, Any, None],
+    pending_tasks: Optional[set[asyncio.Task[None]]] = None,
+) -> asyncio.Task[None]:
+    # Setup can be cancelled before a session handle exists. Keep cleanup alive.
+    task = asyncio.create_task(coroutine)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_background_task_finished)
+    if pending_tasks is not None:
+        pending_tasks.add(task)
+        task.add_done_callback(pending_tasks.discard)
+    return task
+
+
+def _background_task_finished(task: asyncio.Task[None]) -> None:
+    _BACKGROUND_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _drain_background_tasks(pending_tasks: set[asyncio.Task[None]], timeout: float) -> None:
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("realtime_timeout must be a finite non-negative number")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        pending = {task for task in pending_tasks if not task.done()}
+        remaining = deadline - loop.time()
+        if not pending or remaining <= 0:
+            return
+        # Cleanup can add a terminal report, so recheck after each batch.
+        # A deadline or caller cancellation must not cancel provider cleanup.
+        await asyncio.wait(pending, timeout=remaining)
 
 
 class _OpenAIInputAudioTrack(AudioStreamTrack):
@@ -171,16 +208,13 @@ class _OpenAIWebRTCConnection:
         return self._iterate()
 
     async def _iterate(self) -> AsyncIterator[_WireMessage]:
-        try:
-            while True:
-                message = await self._incoming.get()
-                if message is _CLOSED:
-                    return
-                if isinstance(message, (str, bytes)):
-                    yield message
-        finally:
-            if not self._closed:
-                await self.close(code=1000, reason="provider_closed")
+        # AsyncRealtimeSession owns transport cleanup, including cancellation.
+        while True:
+            message = await self._incoming.get()
+            if message is _CLOSED:
+                return
+            if isinstance(message, (str, bytes)):
+                yield message
 
     async def close(self, code: int = 1000, reason: str = "client_closed") -> None:
         del code, reason
@@ -220,6 +254,15 @@ class _OpenAIWebRTCConnection:
         self._incoming.put_nowait(_CLOSED)
 
 
+async def _close_transport(
+    ws: Union[ClientConnection, _OpenAIWebRTCConnection], *, code: int, reason: str
+) -> None:
+    try:
+        await ws.close(code=code, reason=reason)
+    except Exception:
+        pass
+
+
 class AsyncRealtimeSession:
     """Active connection from the caller process to the selected provider.
 
@@ -233,14 +276,21 @@ class AsyncRealtimeSession:
         self,
         info: RealtimeSessionInfo,
         ws: Union[ClientConnection, _OpenAIWebRTCConnection],
+        *,
+        _pending_tasks: Optional[set[asyncio.Task[None]]] = None,
     ) -> None:
         self._info = info
         self._ws = ws
         self._closed = False
+        self._close_frame_emitted = False
+        self._pending_tasks = _pending_tasks
         self._opened_at = time.monotonic()
+        self._closed_at: Optional[float] = None
         self._telemetry_sequence = 0
         self._google_tool_names: dict[str, str] = {}
         self._telemetry_task = asyncio.create_task(self._telemetry_loop())
+        self._close_task: Optional[asyncio.Task[None]] = None
+        self._terminal_telemetry_task: Optional[asyncio.Task[None]] = None
 
     @property
     def session_id(self) -> str:
@@ -339,15 +389,21 @@ class AsyncRealtimeSession:
         await self._send_json({"type": "response.create"})
 
     async def close(self, code: int = 1000, reason: str = "client_closed") -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._telemetry_task.cancel()
-        await self._report_telemetry(terminal=True)
-        try:
-            await self._ws.close(code=code, reason=reason)
-        except Exception:
-            pass
+        if self._close_task is None:
+            self._closed = True
+            self._closed_at = time.monotonic()
+            self._telemetry_task.cancel()
+            self._close_task = _start_background_task(
+                self._finish_close(code=code, reason=reason), self._pending_tasks
+            )
+        await asyncio.shield(self._close_task)
+
+    async def _finish_close(self, *, code: int, reason: str) -> None:
+        await _close_transport(self._ws, code=code, reason=reason)
+        # Reporting is optional. It must never delay closing the provider or caller.
+        self._terminal_telemetry_task = _start_background_task(
+            self._report_telemetry(terminal=True), self._pending_tasks
+        )
 
     async def __aenter__(self) -> AsyncRealtimeSession:
         return self
@@ -359,6 +415,8 @@ class AsyncRealtimeSession:
         return self._frames()
 
     async def _frames(self) -> AsyncIterator[RealtimeFrame]:
+        if self._close_frame_emitted:
+            return
         try:
             async for raw in self._ws:
                 if isinstance(raw, (bytes, bytearray, memoryview)):
@@ -376,10 +434,10 @@ class AsyncRealtimeSession:
                 for frame in _translate_provider_frames(self._info, parsed):
                     yield frame
         finally:
-            if not self._closed:
-                self._closed = True
-                self._telemetry_task.cancel()
-                await self._report_telemetry(terminal=True)
+            await self.close(reason="provider_closed")
+        if not self._close_frame_emitted:
+            self._close_frame_emitted = True
+            yield {"type": "close", "reason": ""}
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         if self._closed:
@@ -410,7 +468,10 @@ class AsyncRealtimeSession:
             return
 
     async def _report_telemetry(self, *, terminal: bool) -> None:
-        elapsed_ms = max(0, int((time.monotonic() - self._opened_at) * 1000))
+        observed_at = (
+            self._closed_at if terminal and self._closed_at is not None else time.monotonic()
+        )
+        elapsed_ms = max(0, int((observed_at - self._opened_at) * 1000))
         authorized_ms = self._info.reservation.authorized_duration_seconds * 1000
         quantity_ms = min(elapsed_ms, authorized_ms)
         self._telemetry_sequence += 1
@@ -849,6 +910,7 @@ async def _open_openai_webrtc(
     info: RealtimeSessionInfo,
     *,
     timeout: float,
+    _pending_tasks: Optional[set[asyncio.Task[None]]] = None,
 ) -> _OpenAIWebRTCConnection:
     endpoint = _validated_openai_webrtc_endpoint(info)
     sideband_url = _validated_sideband_url(info)
@@ -898,8 +960,12 @@ async def _open_openai_webrtc(
         await peer.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
         await connection.wait_ready(timeout)
         return connection
-    except Exception:
-        await connection.close(code=1011, reason="setup_failed")
+    except BaseException as error:
+        cleanup = _start_background_task(
+            _close_transport(connection, code=1011, reason="setup_failed"), _pending_tasks
+        )
+        if not isinstance(error, asyncio.CancelledError):
+            await asyncio.shield(cleanup)
         raise
 
 
@@ -907,11 +973,12 @@ async def open_realtime_session(
     info: RealtimeSessionInfo,
     *,
     timeout: float = 10.0,
+    _pending_tasks: Optional[set[asyncio.Task[None]]] = None,
 ) -> AsyncRealtimeSession:
     """Open a provider connection from a direct session bootstrap response."""
     if info.provider == "openai":
         ws: Union[ClientConnection, _OpenAIWebRTCConnection] = await _open_openai_webrtc(
-            info, timeout=timeout
+            info, timeout=timeout, _pending_tasks=_pending_tasks
         )
     elif info.provider == "xai":
         connect = ws_connect(
@@ -939,7 +1006,11 @@ async def open_realtime_session(
                 break
             if parsed.get("type") == "error" or parsed.get("error"):
                 raise RuntimeError(f"Provider realtime setup failed: {parsed}")
-    except Exception:
-        await ws.close(code=1011, reason="setup_failed")
+    except BaseException as error:
+        cleanup = _start_background_task(
+            _close_transport(ws, code=1011, reason="setup_failed"), _pending_tasks
+        )
+        if not isinstance(error, asyncio.CancelledError):
+            await asyncio.shield(cleanup)
         raise
-    return AsyncRealtimeSession(info, ws)
+    return AsyncRealtimeSession(info, ws, _pending_tasks=_pending_tasks)

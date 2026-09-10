@@ -5,17 +5,7 @@ All notable changes to `spekoai` (Python SDK) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- OpenAI provider-direct realtime sessions now honor the negotiated WebRTC
-  transport, including RTP audio, SDP exchange, data-channel events, and
-  billing-sideband binding before media is enabled.
-
-## [0.2.0] - 2026-07-24
-
-Full feature parity with `@spekoai/sdk` 0.4.x (plus its unreleased surface).
+## [0.2.0] - Unreleased
 
 ### Added
 
@@ -56,17 +46,38 @@ Full feature parity with `@spekoai/sdk` 0.4.x (plus its unreleased surface).
   `x-session-id`) on transcribe/synthesize/complete; `keywords` +
   `stt_language` on transcribe; `model`, `instructions`, `spoken_form` on
   synthesize.
-- **Realtime (S2S) parity**: `inworld`, `alibaba`, and `speko-lab`
-  providers; `agent_id` and `webhook_tags` connect params; input/output
-  sample rates surfaced on the session; new `ready`, `interruption`, and
-  `server_tool_call` frames.
+- **Provider-direct realtime**: OpenAI WebRTC and xAI/Google WebSocket
+  connections; `agent_id` and `webhook_tags` connect params; input/output
+  sample rates surfaced on the session. Native Runtime telemetry and OpenAI
+  sideband requests carry the installed SDK version in `User-Agent`.
 - Pydantic models for the whole REST surface, mirroring the TS types
   (camelCase wire aliases; the calls/callbacks family models the API's
   snake_case serialization directly).
 - First-party pytest suite (respx-mocked httpx).
 
+### Changed
+
+- `RealtimeSessionInfo` now uses the provider-direct session response.
+  The legacy `ws_url` and `ws_token` fields are replaced by provider endpoint,
+  credential, transport, and Runtime telemetry fields.
+
 ### Fixed
 
+- OpenAI provider-direct realtime sessions honor the negotiated WebRTC
+  transport, including RTP audio, SDP exchange, data-channel events, and
+  billing-sideband binding before media is enabled.
+- Realtime cancellation closes provider connections during setup and teardown.
+  Optional terminal telemetry does not delay provider cleanup.
+- Async client shutdown drains its pending realtime cleanup and terminal reports
+  within a shared deadline (five seconds by default). Reports remain best effort
+  after that deadline or event-loop termination.
+- Normal realtime iteration emits the documented close frame once after cleanup.
+  Provider errors and cancellation still propagate.
+- Both package distributions include the existing MIT license.
+- The `websockets` dependency now requires 13.0 or newer, which provides the
+  imported `websockets.asyncio` API. The previous 12.0 floor allowed broken imports.
+- Python 3.9 uses `av` versions below 14.3 to retain published binary wheels.
+  The `av` requirement for newer Python versions stays unchanged.
 - HTTP errors on streaming endpoints (`/v1/transcribe`, `/v1/complete`)
   now raise `SpekoApiError` with the server's message/code instead of
   crashing with httpx's `ResponseNotRead`.
