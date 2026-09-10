@@ -1,11 +1,13 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 import respx
 
 import spekoai.realtime as realtime_module
+from spekoai._user_agent import USER_AGENT
 from spekoai.client import _realtime_session_body
 from spekoai.models import RealtimeConnectParams, RealtimeSessionInfo
 from spekoai.realtime import (
@@ -320,15 +322,23 @@ async def test_openai_uses_webrtc_and_binds_sideband_before_media(monkeypatch):
 
     session = await open_realtime_session(_openai_session_info())
     peer = FakeRTCPeerConnection.instances[0]
-    assert provider_route.called
+    assert provider_route.call_count == 1
     provider_request = provider_route.calls.last.request
     assert provider_request.headers["Authorization"] == "Bearer ek-short-lived"
+    assert provider_request.headers["User-Agent"] == f"python-httpx/{httpx.__version__}"
     assert provider_request.headers["Content-Type"].startswith("multipart/form-data;")
     assert b"offer-sdp" in provider_request.content
     assert b'"model":"gpt-realtime"' in provider_request.content
-    assert sideband_route.called
+    assert sideband_route.call_count == 1
     sideband_request = sideband_route.calls.last.request
     assert sideband_request.headers["Authorization"] == "Bearer telemetry-token"
+    assert sideband_request.headers["User-Agent"] == USER_AGENT
+    assert sideband_request.extensions["timeout"] == {
+        "connect": 10.0,
+        "read": 10.0,
+        "write": 10.0,
+        "pool": 10.0,
+    }
     assert json.loads(sideband_request.content) == {
         "attempt_id": "att_openai",
         "provider_session_id": "call_12345678",
@@ -340,8 +350,73 @@ async def test_openai_uses_webrtc_and_binds_sideband_before_media(monkeypatch):
     assert isinstance(peer.input_track, _OpenAIInputAudioTrack)
     await session.commit()
     assert peer.input_track._queue.qsize() == 1
+    await session._report_telemetry(terminal=False)
     await session.close()
-    assert telemetry_route.called
+    assert telemetry_route.call_count == 2
+    for index, call in enumerate(telemetry_route.calls, start=1):
+        request = call.request
+        assert request.headers["Authorization"] == "Bearer telemetry-token"
+        assert request.headers["User-Agent"] == USER_AGENT
+        assert request.extensions["timeout"] == {
+            "connect": 5.0,
+            "read": 5.0,
+            "write": 5.0,
+            "pool": 5.0,
+        }
+        events = json.loads(request.content)["events"]
+        assert len(events) == index
+        assert events[0]["event_id"] == f"att_openai:usage.reported:{index}"
+        assert set(events[0]["data"]) == {"unit", "quantity_millis"}
+        assert events[0]["data"]["unit"] == "duration_seconds"
+        if index == 2:
+            assert events[1]["event_id"] == "att_openai:session.closed"
+
+
+@respx.mock
+@pytest.mark.parametrize("provider", ["xai", "google"])
+async def test_runtime_marker_does_not_change_provider_websocket_auth(monkeypatch, provider):
+    endpoint = (
+        "wss://api.x.ai/v1/realtime"
+        if provider == "xai"
+        else "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage."
+        "v1beta.GenerativeService.BidiGenerateContentConstrained"
+    )
+    info = _openai_session_info().model_copy(
+        update={
+            "provider": provider,
+            "model": "grok-voice-fast-1.0" if provider == "xai" else "gemini-live",
+            "adapter": "xai.realtime.v1" if provider == "xai" else "google.live.v1",
+            "provider_transport": "websocket",
+            "endpoint": endpoint,
+            "sideband_url": None,
+        }
+    )
+    ws = SimpleNamespace(
+        send=AsyncMock(),
+        recv=AsyncMock(
+            return_value=json.dumps(
+                {"type": "session.updated"} if provider == "xai" else {"setupComplete": {}}
+            )
+        ),
+        close=AsyncMock(),
+    )
+    connect = AsyncMock(return_value=ws)
+    monkeypatch.setattr(realtime_module, "ws_connect", connect)
+    telemetry_route = respx.post(info.telemetry.endpoint).mock(
+        return_value=httpx.Response(202, json={"accepted": 2, "deduplicated": 0})
+    )
+
+    session = await open_realtime_session(info)
+    if provider == "xai":
+        connect.assert_awaited_once_with(
+            f"{endpoint}?model=grok-voice-fast-1.0",
+            subprotocols=["xai-client-secret.ek-short-lived"],
+        )
+    else:
+        connect.assert_awaited_once_with(f"{endpoint}?access_token=ek-short-lived")
+    await session.close()
+    assert telemetry_route.call_count == 1
+    assert telemetry_route.calls.last.request.headers["User-Agent"] == USER_AGENT
 
 
 def test_openai_provider_url_refuses_websocket_downgrade():

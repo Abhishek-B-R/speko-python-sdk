@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Iterator
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional, Union
 from uuid import uuid4
 
@@ -27,6 +26,7 @@ from spekoai._http import (
     raise_for_status,
     raise_for_status_streamed,
 )
+from spekoai._user_agent import USER_AGENT
 from spekoai.errors import SpekoApiError
 from spekoai.models import (
     ChatMessage,
@@ -83,13 +83,6 @@ from spekoai.resources import (
 
 DEFAULT_BASE_URL = "https://api.speko.dev"
 DEFAULT_TIMEOUT = 30.0
-
-try:
-    _PKG_VERSION = version("spekoai")
-except PackageNotFoundError:  # pragma: no cover — running from source without install
-    _PKG_VERSION = "0.0.0+unknown"
-
-USER_AGENT = f"spekoai-python/{_PKG_VERSION}"
 
 IntentInput = Union[RoutingIntent, dict[str, Any]]
 ConstraintsInput = Union[PipelineConstraints, dict[str, Any], None]

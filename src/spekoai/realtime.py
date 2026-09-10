@@ -37,6 +37,7 @@ from av import AudioFrame, AudioResampler
 from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
 
+from spekoai._user_agent import USER_AGENT
 from spekoai.models import RealtimeSessionInfo
 
 RealtimeFrame = dict[str, Any]
@@ -442,7 +443,10 @@ class AsyncRealtimeSession:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(
                     self._info.telemetry.endpoint,
-                    headers={"Authorization": f"Bearer {self._info.telemetry.token}"},
+                    headers={
+                        "Authorization": f"Bearer {self._info.telemetry.token}",
+                        "User-Agent": USER_AGENT,
+                    },
                     json={"events": events},
                 )
         except Exception:
@@ -883,7 +887,10 @@ async def _open_openai_webrtc(
             call_id = _openai_call_id(answer.headers.get("Location"))
             bound = await client.post(
                 sideband_url,
-                headers={"Authorization": f"Bearer {info.telemetry.token}"},
+                headers={
+                    "Authorization": f"Bearer {info.telemetry.token}",
+                    "User-Agent": USER_AGENT,
+                },
                 json={"attempt_id": info.attempt_id, "provider_session_id": call_id},
             )
             if bound.status_code < 200 or bound.status_code >= 300:
