@@ -1,10 +1,10 @@
 [build-system]
-requires = ["uv_build>=0.5"]
+requires = ["uv_build==0.12.13"]
 build-backend = "uv_build"
 
 [project]
 name = "spekoai"
-version = "0.2.0"
+version = "0.2.1"
 description = "Official Speko Python SDK — one API, every voice provider"
 readme = "README.md"
 license = "MIT"
@@ -48,12 +48,14 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
+# With Python >=3.9, these two branches preserve the Python 3.9 dependency caps.
+# Equality survives uv's metadata normalization, including Python 3.10 prereleases.
 dependencies = [
-  "aiortc>=1.13.0,<1.14.0; python_version < '3.10'",
-  "aiortc>=1.15.0,<2.0.0; python_version >= '3.10'",
+  "aiortc>=1.13.0,<1.14.0; python_version == '3.9'",
+  "aiortc>=1.15.0,<2.0.0; python_version != '3.9'",
   # PyAV 14.3 and 14.4 have no CPython 3.9 wheels.
-  "av>=14.0.0,<14.3.0; python_version < '3.10'",
-  "av>=14.0.0,<18.0.0; python_version >= '3.10'",
+  "av>=14.0.0,<14.3.0; python_version == '3.9'",
+  "av>=14.0.0,<18.0.0; python_version != '3.9'",
   "httpx>=0.27.0",
   "pydantic>=2.0.0",
   "websockets>=13.0",
@@ -83,6 +85,7 @@ environments = ["python_full_version >= '3.10'"]
 [tool.uv.build-backend]
 module-name = "spekoai"
 module-root = "src"
+source-include = ["scripts/check_distribution_metadata.py"]
 
 [tool.ruff]
 target-version = "py39"
