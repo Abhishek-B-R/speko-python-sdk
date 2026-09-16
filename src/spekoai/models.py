@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 OptimizeFor = Literal["balanced", "accuracy", "latency", "cost"]
@@ -800,15 +800,9 @@ class AvailablePhoneNumber(_SpekoModel):
     region: AvailablePhoneNumberRegion
 
 
-PhoneNumberKybStatus = Literal[
-    "missing", "draft", "submitted", "approved", "rejected", "revoked"
-]
-PhoneNumberKybSubmissionStatus = Literal[
-    "draft", "submitted", "approved", "rejected", "revoked"
-]
-PhoneNumberKybSlackNotificationStatus = Literal[
-    "not_queued", "queued", "enqueue_failed"
-]
+PhoneNumberKybStatus = Literal["missing", "draft", "submitted", "approved", "rejected", "revoked"]
+PhoneNumberKybSubmissionStatus = Literal["draft", "submitted", "approved", "rejected", "revoked"]
+PhoneNumberKybSlackNotificationStatus = Literal["not_queued", "queued", "enqueue_failed"]
 
 
 class PhoneNumberKybAddress(_SpekoModel):
@@ -927,9 +921,7 @@ class PhoneNumberKybOverview(_SpekoModel):
     declaration_prefill: Optional[PhoneNumberKybDeclaration] = None
     required_attestation: Optional[PhoneNumberKybAttestationContract] = None
     attestation_required: Optional[bool] = None
-    compliance_access: Optional[
-        Literal["enabled", "awaiting_attestation", "suspended"]
-    ] = None
+    compliance_access: Optional[Literal["enabled", "awaiting_attestation", "suspended"]] = None
 
 
 # --- Agents ---------------------------------------------------------------------
@@ -983,21 +975,82 @@ AgentAmbientClip = Literal[
 ]
 
 
+def _exactly_one_source(model: Any, *, required: bool) -> Any:
+    """`clip` xor `sound_id`. The server rejects both-or-neither with a 422; the
+    SDK refuses the same shapes at construction so the contract is enforced
+    where the mistake is made, not two network hops later."""
+    has_clip = getattr(model, "clip", None) is not None
+    has_sound = getattr(model, "sound_id", None) is not None
+    if has_clip and has_sound:
+        raise ValueError("Provide at most one of `clip` or `sound_id`, not both.")
+    if required and not (has_clip or has_sound):
+        raise ValueError("Provide exactly one of `clip` or `sound_id`.")
+    return model
+
+
 class AgentAmbientAudio(_SpekoModel):
-    clip: AgentAmbientClip
+    # A built-in clip, or `sound_id` naming an audio file the organization
+    # uploaded via `/v1/sounds`. Exactly one — validated below, matching the
+    # server, which rejects a body with both or neither.
+    clip: Optional[AgentAmbientClip] = None
+    sound_id: Optional[str] = None
     # Linear gain in [0, 16], defaulting to 1.0 — the clip's own recorded level,
     # which is not the same as "full volume". The built-ins are mastered roughly
     # 30 dB apart: office-ambience (~-52 LUFS) needs ~5-10 to be audible under
     # speech, city-ambience is about right at 1, crowded-room distorts past ~1.6.
+    # An uploaded sound has no measured level — start at 1 and adjust by ear.
     volume: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _check_source(self) -> AgentAmbientAudio:
+        return _exactly_one_source(self, required=True)
+
+
+class AgentToolCallSound(_SpekoModel):
+    """Plays while a tool call is in flight and stops when it returns — the
+    audible sibling of a tool's ``pre_tool_speech``. A webhook that takes
+    seconds otherwise leaves dead air a caller hears as a dropped line.
+    Individual tools override or silence it via their own ``tool_sound``."""
+
+    clip: Optional[AgentAmbientClip] = None
+    sound_id: Optional[str] = None
+    volume: Optional[float] = None
+    # Floor on audible time (default 600). Tool latency is bimodal: a cached
+    # lookup returns in tens of milliseconds, and a burst of sound that short
+    # reads as a glitch rather than a cue.
+    min_duration_ms: Optional[int] = None
+    # Silence held first (default 0), so a spoken lead-in lands before the
+    # sound. A tool that finishes inside this window plays nothing at all.
+    start_delay_ms: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _check_source(self) -> AgentToolCallSound:
+        return _exactly_one_source(self, required=True)
+
+
+class AgentToolSoundOverride(_SpekoModel):
+    """One tool's departure from the agent-wide tool-call sound. Omit the field
+    to inherit it; ``enabled=False`` runs that tool silently; supplying a source
+    swaps the sound for this tool only. At most one source: ``enabled=True``
+    with neither means "on, with the agent's own sound"."""
+
+    enabled: bool
+    clip: Optional[AgentAmbientClip] = None
+    sound_id: Optional[str] = None
+    volume: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _check_source(self) -> AgentToolSoundOverride:
+        return _exactly_one_source(self, required=False)
 
 
 class AgentBackgroundAudio(_SpekoModel):
-    """Per-agent background audio. Today only ambient (continuous loop) is
-    supported. The ambience plays on a separate media track mixed server-side,
-    so it reaches both browser (WebRTC) and phone (SIP) callers."""
+    """Per-agent background audio: a continuous ambient bed, a sound played
+    during tool calls, or both. Either plays on a separate media track mixed
+    server-side, so it reaches both browser (WebRTC) and phone (SIP) callers."""
 
     ambient: Optional[AgentAmbientAudio] = None
+    tool_sound: Optional[AgentToolCallSound] = None
 
 
 class AgentSpeechNormalization(_SpekoModel):
@@ -1214,6 +1267,8 @@ class AgentToolRow(_SpekoModel):
     source: AgentToolSourceSerialized = Field(discriminator="kind")
     # Spoken lead-in behavior before this tool executes.
     pre_tool_speech: ChatToolPreToolSpeech = "auto"
+    # Per-tool override of the agent's tool-call sound; None = inherit it.
+    tool_sound: Optional[AgentToolSoundOverride] = None
     created_at: str
     updated_at: str
 
@@ -1225,6 +1280,7 @@ class AgentToolCreateParams(_SpekoModel):
     source: AgentToolSourceCreate = Field(discriminator="kind")
     # Spoken lead-in behavior before the tool executes. Defaults to `auto`.
     pre_tool_speech: Optional[ChatToolPreToolSpeech] = None
+    tool_sound: Optional[AgentToolSoundOverride] = None
 
 
 class AgentToolUpdateParams(_SpekoModel):
@@ -1232,6 +1288,9 @@ class AgentToolUpdateParams(_SpekoModel):
     parameters: Optional[dict[str, Any]] = None
     source: Optional[AgentToolSourceUpdate] = Field(default=None, discriminator="kind")
     pre_tool_speech: Optional[ChatToolPreToolSpeech] = None
+    # Explicit None is meaningful on update: it clears the override and returns
+    # the tool to the agent-wide sound.
+    tool_sound: Optional[AgentToolSoundOverride] = None
 
 
 class AgentCallListEntry(_SpekoSnakeModel):
@@ -1298,9 +1357,7 @@ class CallReportWebhookDelivery(_SpekoModel):
     created_at: str
 
 
-ScheduledCallbackStatus = Literal[
-    "scheduled", "dispatching", "dispatched", "cancelled", "failed"
-]
+ScheduledCallbackStatus = Literal["scheduled", "dispatching", "dispatched", "cancelled", "failed"]
 
 
 class ScheduledCallback(_SpekoSnakeModel):
@@ -1416,9 +1473,7 @@ class CallTransfer(_SpekoSnakeModel):
     session_id: str
     organization_id: str
     kind: Literal["blind", "warm"]
-    status: Literal[
-        "requested", "screening", "bridging", "completed", "failed", "cancelled"
-    ]
+    status: Literal["requested", "screening", "bridging", "completed", "failed", "cancelled"]
     transfer_to: str
     from_room_name: Optional[str] = None
     consultation_room_name: Optional[str] = None
@@ -1859,12 +1914,8 @@ SmsMessageStatus = Literal[
     "received",
 ]
 SmsMessageDirection = Literal["inbound", "outbound"]
-SmsMessageOrigin = Literal[
-    "api", "dashboard", "agent_tool", "agent_auto_reply", "telnyx"
-]
-SmsConsentSource = Literal[
-    "inbound", "api", "keyword", "webform", "paper", "verbal", "import"
-]
+SmsMessageOrigin = Literal["api", "dashboard", "agent_tool", "agent_auto_reply", "telnyx"]
+SmsConsentSource = Literal["inbound", "api", "keyword", "webform", "paper", "verbal", "import"]
 
 
 class SmsSegmentEstimate(_SpekoSnakeModel):
