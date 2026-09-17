@@ -30,6 +30,7 @@ PHONE_NUMBER = {
         "outboundReady": True,
         "agentReady": True,
         "forwardingRequired": False,
+        "forwardingSipUri": None,
         "sipConnectionReady": True,
         "issues": [],
     },

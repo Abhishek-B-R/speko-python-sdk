@@ -705,6 +705,9 @@ class PhoneNumberSetupStatus(_SpekoModel):
     outbound_ready: bool
     agent_ready: bool
     forwarding_required: bool
+    # ``sip:<E.164>@<host>`` the carrier forwards inbound calls to when
+    # ``forwarding_required``; ``None`` otherwise (or on servers predating it).
+    forwarding_sip_uri: str | None = None
     sip_connection_ready: bool
     issues: list[str]
 
