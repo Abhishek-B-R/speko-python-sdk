@@ -13,6 +13,7 @@ from spekoai import (
     TranscribeStreamMeta,
     TranscribeStreamTranscript,
 )
+from spekoai._http import aiter_sse, iter_sse, iter_sse_with_id
 from tests.conftest import BASE, sse
 
 TRANSCRIBE_SSE = sse(
@@ -268,3 +269,27 @@ async def test_async_streaming_mirror(aspeko):
         chunks = [chunk async for chunk in stream]
     assert b"".join(chunks) == b"audio"
     assert stream.content_type == "audio/mpeg"
+
+
+def test_iter_sse_splits_crlf_events():
+    # SSE allows CRLF line endings. A CR and its LF can arrive in separate chunks.
+    chunks = ['event: meta\r\ndata: {"a": 1}\r', '\n\r\nevent: done\r\ndata: {"b": 2}\r\n\r\n']
+    assert list(iter_sse(chunks)) == [("meta", {"a": 1}), ("done", {"b": 2})]
+
+
+def test_iter_sse_splits_cr_events():
+    chunks = ["event: meta\rdata: 1\r\r", "event: done\rdata: 2\r\r"]
+    assert list(iter_sse(chunks)) == [("meta", 1), ("done", 2)]
+
+
+def test_iter_sse_with_id_splits_crlf_events():
+    chunks = ["id: 1\r\nevent: a\r\ndata: 1\r\n\r\nid: 2\r\nevent: b\r\ndata: 2\r\n\r\n"]
+    assert list(iter_sse_with_id(chunks)) == [("a", "1", 1), ("b", "2", 2)]
+
+
+async def test_aiter_sse_splits_crlf_events():
+    async def chunks():
+        yield "event: meta\r\ndata: 1\r"
+        yield "\n\r\nevent: done\r\ndata: 2\r\n\r\n"
+
+    assert [item async for item in aiter_sse(chunks())] == [("meta", 1), ("done", 2)]

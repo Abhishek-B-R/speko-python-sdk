@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any, Optional, TypeVar, Union
 from urllib.parse import quote
@@ -84,10 +85,19 @@ def decode_sse_block_with_id(block: str) -> tuple[str, Optional[str], Any]:
     return event, event_id, data
 
 
+# SSE lines may end in CRLF, LF or CR. Normalize to LF, holding back a trailing
+# CR until the next chunk shows whether an LF follows it.
+_SSE_NEWLINE = re.compile(r"\r\n|\r(?!\Z)")
+
+
+def _normalize_sse_newlines(buffer: str) -> str:
+    return _SSE_NEWLINE.sub("\n", buffer)
+
+
 def iter_sse(chunks: Iterable[str]) -> Iterator[tuple[str, Any]]:
     buffer = ""
     for chunk in chunks:
-        buffer += chunk
+        buffer = _normalize_sse_newlines(buffer + chunk)
         while "\n\n" in buffer:
             block, buffer = buffer.split("\n\n", 1)
             if block.strip():
@@ -99,7 +109,7 @@ def iter_sse(chunks: Iterable[str]) -> Iterator[tuple[str, Any]]:
 async def aiter_sse(chunks: AsyncIterator[str]) -> AsyncIterator[tuple[str, Any]]:
     buffer = ""
     async for chunk in chunks:
-        buffer += chunk
+        buffer = _normalize_sse_newlines(buffer + chunk)
         while "\n\n" in buffer:
             block, buffer = buffer.split("\n\n", 1)
             if block.strip():
@@ -111,7 +121,7 @@ async def aiter_sse(chunks: AsyncIterator[str]) -> AsyncIterator[tuple[str, Any]
 def iter_sse_with_id(chunks: Iterable[str]) -> Iterator[tuple[str, Optional[str], Any]]:
     buffer = ""
     for chunk in chunks:
-        buffer += chunk
+        buffer = _normalize_sse_newlines(buffer + chunk)
         while "\n\n" in buffer:
             block, buffer = buffer.split("\n\n", 1)
             if block.strip():
@@ -125,7 +135,7 @@ async def aiter_sse_with_id(
 ) -> AsyncIterator[tuple[str, Optional[str], Any]]:
     buffer = ""
     async for chunk in chunks:
-        buffer += chunk
+        buffer = _normalize_sse_newlines(buffer + chunk)
         while "\n\n" in buffer:
             block, buffer = buffer.split("\n\n", 1)
             if block.strip():
