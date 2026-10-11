@@ -45,7 +45,7 @@ COMPLETE_SSE = sse(
     ),
     ("delta", {"text": "Hel"}),
     ("delta", {"text": "lo"}),
-    ("tool_call", {"id": "call_1", "name": "lookup", "args": "{\"q\":1}"}),
+    ("tool_call", {"id": "call_1", "name": "lookup", "args": '{"q":1}'}),
     (
         "done",
         {
@@ -55,7 +55,7 @@ COMPLETE_SSE = sse(
             "usage": {"promptTokens": 10, "completionTokens": 5},
             "failoverCount": 0,
             "scoresRunId": None,
-            "toolCalls": [{"id": "call_1", "name": "lookup", "args": "{\"q\":1}"}],
+            "toolCalls": [{"id": "call_1", "name": "lookup", "args": '{"q":1}'}],
         },
     ),
 )
@@ -99,6 +99,33 @@ def test_transcribe_returns_done_payload(speko):
     result = speko.transcribe(b"\x00", language="es-MX")
     assert result.text == "hola mundo"
     assert result.scores_run_id == "run_1"
+
+
+@respx.mock
+def test_transcribe_keeps_the_done_frame_warnings(speko):
+    done = {
+        "text": "Your table is",
+        "provider": "gemini",
+        "model": "gemini-3.5-transcribe",
+        "warnings": [
+            {"kind": "transcript_truncated", "provider": "gemini"},
+            {"kind": "param_dropped", "param": "diarization", "message": "dropped"},
+        ],
+    }
+    respx.post(f"{BASE}/v1/transcribe").respond(
+        text=sse(("done", done)), headers={"content-type": "text/event-stream"}
+    )
+    result = speko.transcribe(b"\x00", language="en")
+    assert [w.kind for w in result.warnings] == ["transcript_truncated", "param_dropped"]
+    assert result.warnings[1].message == "dropped"
+
+
+@respx.mock
+def test_transcribe_without_warnings_leaves_the_field_unset(speko):
+    respx.post(f"{BASE}/v1/transcribe").respond(
+        text=TRANSCRIBE_SSE, headers={"content-type": "text/event-stream"}
+    )
+    assert speko.transcribe(b"\x00", language="es-MX").warnings is None
 
 
 @respx.mock
@@ -169,9 +196,7 @@ def test_complete_result_includes_tool_calls(speko):
     respx.post(f"{BASE}/v1/complete").respond(
         text=COMPLETE_SSE, headers={"content-type": "text/event-stream"}
     )
-    result = speko.complete(
-        messages=[{"role": "user", "content": "Hi"}], intent={"language": "en"}
-    )
+    result = speko.complete(messages=[{"role": "user", "content": "Hi"}], intent={"language": "en"})
     assert result.text == "Hello"
     assert result.tool_calls[0].id == "call_1"
     assert result.usage.prompt_tokens == 10

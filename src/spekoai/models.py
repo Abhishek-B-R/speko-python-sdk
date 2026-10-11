@@ -212,6 +212,22 @@ class SttOptions(_SpekoModel):
     language: Optional[str] = None
 
 
+class TranscribeWarning(_SpekoModel):
+    """A caveat the server attached to a transcription.
+
+    ``transcript_truncated`` means the provider stopped before the end of the
+    audio, so speech after the cut is missing. ``kind`` stays an open string so
+    a kind added by a newer server still parses.
+    """
+
+    kind: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    param: Optional[str] = None
+    reason: Optional[str] = None
+    message: Optional[str] = None
+
+
 class TranscribeResult(_SpekoModel):
     text: str
     provider: str
@@ -219,6 +235,9 @@ class TranscribeResult(_SpekoModel):
     confidence: Optional[float] = None
     failover_count: int = 0
     scores_run_id: Optional[str] = None
+    # Present only when the server attached at least one warning. Check for
+    # ``transcript_truncated`` before treating ``text`` as the whole recording.
+    warnings: Optional[list[TranscribeWarning]] = None
 
 
 class TranscribeStreamMeta(_SpekoModel):
