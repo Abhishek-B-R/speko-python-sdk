@@ -55,20 +55,29 @@ class PhoneNumbersResource:
     def search_available(
         self,
         *,
+        country: Optional[str] = None,
         area_code: Optional[str] = None,
         locality: Optional[str] = None,
+        state: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[AvailablePhoneNumber]:
-        """Search the platform-managed pool for orderable US numbers.
+        """Search the platform-managed pool for orderable US or Canadian numbers.
 
-        Filter by 3-digit area code and/or locality. Results include cost so
-        you can preview "$1 upfront + $2/month" before committing to
+        Filter by country (``"US"``/``"CA"``; omitted, a Canadian area code
+        searches Canada), 3-digit area code, locality and/or state/province.
+        Results include cost so you can preview "$1 upfront + $2/month" before committing to
         ``create``.
         """
         resp = self._client.get(
             "/v1/phone-numbers/available",
             params=query_string(
-                {"areaCode": area_code, "locality": locality, "limit": limit}
+                {
+                    "country": country,
+                    "areaCode": area_code,
+                    "locality": locality,
+                    "state": state,
+                    "limit": limit,
+                }
             ),
         )
         raise_for_status(resp)
@@ -150,14 +159,22 @@ class AsyncPhoneNumbersResource:
     async def search_available(
         self,
         *,
+        country: Optional[str] = None,
         area_code: Optional[str] = None,
         locality: Optional[str] = None,
+        state: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[AvailablePhoneNumber]:
         resp = await self._client.get(
             "/v1/phone-numbers/available",
             params=query_string(
-                {"areaCode": area_code, "locality": locality, "limit": limit}
+                {
+                    "country": country,
+                    "areaCode": area_code,
+                    "locality": locality,
+                    "state": state,
+                    "limit": limit,
+                }
             ),
         )
         raise_for_status(resp)
