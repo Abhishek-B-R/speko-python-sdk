@@ -630,6 +630,11 @@ class VoiceDialParams(_SpekoModel):
     stt_options: Optional[SttOptions] = None
     # Server-side wall-clock cap in seconds. Clamped server-side to 30s-4h.
     max_duration_seconds: Optional[int] = None
+    # How long the call rings before it ends as a no-answer, in whole seconds
+    # (20-45, default 45). Counted from when the phone starts ringing. Overrides
+    # the agent's ring_timeout_seconds. Outside 20-45 -> 400
+    # RING_TIMEOUT_OUT_OF_RANGE.
+    ring_timeout_seconds: Optional[int] = None
     turn_handling: Optional[TurnHandling] = None
     telephony: Optional[TelephonyOptions] = None
     # Exact-match attributes used only for workspace webhook routing.
