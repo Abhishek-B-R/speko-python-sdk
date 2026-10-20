@@ -2046,7 +2046,11 @@ class SmsMessage(_SpekoSnakeModel):
     id: str
     conversation_id: str
     batch_id: Optional[str] = None
+    # The workspace number of the conversation, for inbound and outbound messages alike.
+    phone_number_id: Optional[str] = None
     from_phone_number_id: str
+    # The agent handling the conversation when the message was written. Never changes.
+    agent_id: Optional[str] = None
     direction: SmsMessageDirection
     origin: SmsMessageOrigin
     from_: str = Field(alias="from")
@@ -2083,6 +2087,9 @@ class SmsSendParams(_SpekoSnakeModel):
     consent_id: Optional[str] = None
     recipient_timezone: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    # Sent from one agent's inbox: refused with 409 SMS_THREAD_AGENT_CHANGED unless that agent
+    # still handles the conversation.
+    expected_agent_id: Optional[str] = None
 
 
 class SmsConversationSendParams(_SpekoSnakeModel):
@@ -2091,6 +2098,9 @@ class SmsConversationSendParams(_SpekoSnakeModel):
     consent_id: Optional[str] = None
     recipient_timezone: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    # Sent from one agent's inbox: refused with 409 SMS_THREAD_AGENT_CHANGED unless that agent
+    # still handles the conversation.
+    expected_agent_id: Optional[str] = None
 
 
 class SmsBatchRecipient(_SpekoSnakeModel):
@@ -2140,7 +2150,10 @@ class SmsConversation(_SpekoSnakeModel):
     status: Literal["open", "closed", "spam"]
     automation_status: Literal["disabled", "enabled", "paused"]
     assigned_user_id: Optional[str] = None
+    # The agent handling the conversation: the pin when set, else the phone number's agent.
     assigned_agent_id: Optional[str] = None
+    # An agent pinned to this conversation. None follows the phone number's agent.
+    agent_override_id: Optional[str] = None
     unread_count: int
     recipient_timezone: Optional[str] = None
     last_inbound_at: Optional[str] = None
@@ -2154,9 +2167,13 @@ class SmsConversation(_SpekoSnakeModel):
 class SmsConversationUpdate(_SpekoSnakeModel):
     status: Optional[Literal["open", "closed", "spam"]] = None
     assigned_user_id: Optional[str] = None
+    # Pins an agent to the conversation. An explicit None removes the pin.
     assigned_agent_id: Optional[str] = None
     automation_status: Optional[Literal["disabled", "enabled", "paused"]] = None
     recipient_timezone: Optional[str] = None
+    # Sent from one agent's inbox: refused with 409 SMS_THREAD_AGENT_CHANGED unless that agent
+    # still handles the conversation.
+    expected_agent_id: Optional[str] = None
 
 
 class SmsConversationNote(_SpekoSnakeModel):

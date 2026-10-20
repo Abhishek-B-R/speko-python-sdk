@@ -3,6 +3,7 @@ import json
 import pytest
 import respx
 
+from spekoai import SpekoApiError
 from tests.conftest import BASE
 
 MESSAGE = {
@@ -98,3 +99,91 @@ async def test_async_sms_send(aspeko):
 
     assert result.status == "queued"
     assert route.calls.last.request.headers["Idempotency-Key"] == "async-message-1"
+
+
+@respx.mock
+def test_sms_agent_inbox_filters_and_unpinning(speko):
+    conversation = {
+        "id": "conversation_1",
+        "phone_number_id": "number_1",
+        "remote_phone_number": "+12025550123",
+        "status": "open",
+        "automation_status": "enabled",
+        "assigned_agent_id": "agent_b",
+        "agent_override_id": None,
+        "unread_count": 0,
+        "last_message_at": "2026-09-01T12:00:00.000Z",
+        "created_at": "2026-09-01T12:00:00.000Z",
+        "updated_at": "2026-09-01T12:00:00.000Z",
+    }
+    inbox = respx.get(f"{BASE}/v1/sms/conversations").respond(
+        json={"data": [conversation], "next_cursor": None}
+    )
+    stamped = respx.get(f"{BASE}/v1/sms/messages").respond(
+        json={
+            "data": [{**MESSAGE, "phone_number_id": "number_1", "agent_id": "agent_a"}],
+            "next_cursor": None,
+        }
+    )
+    unpin = respx.patch(f"{BASE}/v1/sms/conversations/conversation_1").respond(json=conversation)
+
+    threads, _ = speko.sms.conversations.list(agent_id="agent_a", limit=50)
+    rows, _ = speko.sms.messages.list(agent_id="agent_a")
+    updated = speko.sms.conversations.update("conversation_1", {"assigned_agent_id": None})
+
+    assert dict(inbox.calls.last.request.url.params) == {"agent_id": "agent_a", "limit": "50"}
+    assert (threads[0].assigned_agent_id, threads[0].agent_override_id) == ("agent_b", None)
+    assert dict(stamped.calls.last.request.url.params) == {"agent_id": "agent_a"}
+    assert (rows[0].phone_number_id, rows[0].agent_id) == ("number_1", "agent_a")
+    assert json.loads(unpin.calls.last.request.content) == {"assigned_agent_id": None}
+    assert updated.agent_override_id is None
+
+
+@respx.mock
+def test_sms_agent_inbox_writes_carry_the_expected_agent(speko):
+    reply = respx.post(f"{BASE}/v1/sms/conversations/conversation_1/messages").respond(
+        status_code=202, json=MESSAGE
+    )
+    patch = respx.patch(f"{BASE}/v1/sms/conversations/conversation_1").respond(
+        status_code=409,
+        json={
+            "error": "Another agent handles this conversation now.",
+            "code": "SMS_THREAD_AGENT_CHANGED",
+        },
+    )
+    first = respx.post(f"{BASE}/v1/sms/messages").respond(status_code=202, json=MESSAGE)
+
+    speko.sms.messages.send(
+        {
+            "from_phone_number_id": "number_1",
+            "to": "+12025550123",
+            "text": "Your table is ready.",
+            "expected_agent_id": "agent_a",
+        },
+        idempotency_key="first-1",
+    )
+    speko.sms.conversations.send(
+        "conversation_1",
+        {"text": "On my way.", "expected_agent_id": "agent_a"},
+        idempotency_key="reply-1",
+    )
+    with pytest.raises(SpekoApiError) as refused:
+        speko.sms.conversations.update(
+            "conversation_1", {"automation_status": "paused", "expected_agent_id": "agent_a"}
+        )
+
+    assert json.loads(first.calls.last.request.content) == {
+        "from_phone_number_id": "number_1",
+        "to": "+12025550123",
+        "text": "Your table is ready.",
+        "expected_agent_id": "agent_a",
+    }
+    assert json.loads(reply.calls.last.request.content) == {
+        "text": "On my way.",
+        "expected_agent_id": "agent_a",
+    }
+    assert json.loads(patch.calls.last.request.content) == {
+        "automation_status": "paused",
+        "expected_agent_id": "agent_a",
+    }
+    assert (refused.value.status, refused.value.code) == (409, "SMS_THREAD_AGENT_CHANGED")
