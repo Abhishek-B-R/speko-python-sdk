@@ -1486,6 +1486,10 @@ class CallReport(_SpekoSnakeModel):
     organization_id: str
     summary: str
     outcome: str
+    # Whether anybody reached anybody, from what was recorded on the line:
+    # connected | no_answer | not_connected | no_response. ``outcome`` can read
+    # "completed" on a call nobody spoke on. None while open or on older reports.
+    contact: Optional[str] = None
     structured_data: dict[str, Any] = Field(default_factory=dict)
     custom_data: dict[str, Any] = Field(default_factory=dict)
     transcript: CallTranscript
@@ -1517,6 +1521,7 @@ class FinalizeCallReportResult(_SpekoSnakeModel):
     session_id: str
     summary: str
     outcome: str
+    contact: Optional[str] = None
     cost_micro_usd: str
     webhook_deliveries: list[CallReportWebhookDelivery] = Field(default_factory=list)
 
