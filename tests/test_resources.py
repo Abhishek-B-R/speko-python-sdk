@@ -73,6 +73,26 @@ def test_agents_crud_paths(speko):
 
 
 @respx.mock
+def test_agent_outbound_dtmf_round_trips(speko):
+    respx.post(f"{BASE}/v1/agents").respond(json={**AGENT, "outboundDtmf": "8w2"})
+    patch = respx.patch(f"{BASE}/v1/agents/ag_1").respond(json=AGENT)
+
+    created = speko.agents.create(
+        {
+            "name": "Support Bot",
+            "system_prompt": "You help.",
+            "intent": {"language": "en"},
+            "outbound_dtmf": "8w2",
+        }
+    )
+    assert created.outbound_dtmf == "8w2"
+    assert json.loads(respx.routes[0].calls.last.request.content)["outboundDtmf"] == "8w2"
+
+    speko.agents.update("ag_1", {"outbound_dtmf": None})
+    assert json.loads(patch.calls.last.request.content) == {"outboundDtmf": None}
+
+
+@respx.mock
 def test_agent_attach_detach_phone_number(speko):
     route = respx.patch(f"{BASE}/v1/phone-numbers/pn_1").respond(json=PHONE_NUMBER)
 
@@ -423,6 +443,26 @@ def test_voices_and_sessions_transcript(speko):
     )
     catalog = speko.voices.list(provider="cartesia")
     assert catalog.voices[0].vendor == "cartesia"
+    assert catalog.voices[0].models is None
+
+
+@respx.mock
+def test_voices_carry_paxa_models(speko):
+    respx.get(f"{BASE}/v1/voices").respond(
+        json={
+            "voices": [
+                {
+                    "vendor": "paxa",
+                    "id": "namprik",
+                    "name": "Nam Prik",
+                    "models": ["paxa-tts-flash-v2"],
+                }
+            ],
+            "providers": [],
+        }
+    )
+    catalog = speko.voices.list(provider="paxa")
+    assert catalog.voices[0].models == ["paxa-tts-flash-v2"]
 
     respx.get(f"{BASE}/v1/sessions/sess_1/transcript").respond(
         json={

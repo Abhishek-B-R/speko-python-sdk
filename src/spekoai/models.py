@@ -301,6 +301,10 @@ class VoiceCatalogEntry(_SpekoModel):
     # Voice id passed through to the provider's TTS API.
     id: str
     name: str
+    # The vendor's models whose voice list includes this voice. Present only
+    # where a vendor's models list different voices (Paxa); None means every
+    # model of the vendor speaks it.
+    models: Optional[list[str]] = None
 
 
 class VoicesProviderEntry(_SpekoModel):
@@ -595,6 +599,11 @@ class TelephonyOptions(_SpekoModel):
 
     region: Optional[str] = None
     amd: Optional[TelephonyAmd] = None
+    # Keys pressed after the far end answers, before the agent's first turn:
+    # a phone-menu path you already know, such as "ww1w8". Digits 0-9, * and
+    # #, with w or , for a half-second pause. Overrides the agent's saved
+    # outboundDtmf; "" presses nothing on this call.
+    dtmf: Optional[str] = None
 
 
 class VoiceDialParams(_SpekoModel):
@@ -1201,6 +1210,8 @@ class AgentRow(_SpekoModel):
     extraction_fields: list[AgentExtractionField] = Field(default_factory=list)
     # Prompt-variable registry. Returned on single-agent reads; None = empty.
     prompt_variables: Optional[list[AgentPromptVariable]] = None
+    # Keys outbound calls press after answer, before the agent's first turn.
+    outbound_dtmf: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -1224,6 +1235,11 @@ class AgentCreateParams(_SpekoModel):
     extraction_fields: Optional[list[AgentExtractionField]] = None
     # Declare the prompt's {{variables}} with per-agent defaults/descriptions.
     prompt_variables: Optional[list[AgentPromptVariable]] = None
+    # Keys every outbound call this agent places presses after the far end
+    # answers, before its first turn: a phone-menu path you already know, such
+    # as "8w2". Digits 0-9, * and #, with w or , for a half-second pause. A
+    # per-call telephony.dtmf on voice.dial() wins.
+    outbound_dtmf: Optional[str] = None
 
 
 class AgentUpdateParams(_SpekoModel):
@@ -1244,6 +1260,8 @@ class AgentUpdateParams(_SpekoModel):
     # None leaves the schema untouched; [] clears it.
     extraction_fields: Optional[list[AgentExtractionField]] = None
     prompt_variables: Optional[list[AgentPromptVariable]] = None
+    # None (passed explicitly) stops pressing keys on answer.
+    outbound_dtmf: Optional[str] = None
 
 
 # --- Agent tools ---------------------------------------------------------------
