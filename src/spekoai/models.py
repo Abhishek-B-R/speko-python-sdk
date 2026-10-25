@@ -771,6 +771,12 @@ class PhoneNumberRow(_SpekoModel):
     direction: PhoneNumberDirection
     dispatch_metadata_template: Optional[dict[str, Any]] = None
     label: Optional[str] = None
+    # Outbound caller name (CNAM) listed for this number; None when none.
+    caller_name: Optional[str] = None
+    # When caller_name last changed; carriers pick up a new name within ~72h.
+    caller_name_updated_at: Optional[str] = None
+    # Whether a caller name can be set: US local numbers bought through Speko.
+    caller_name_supported: bool = False
     sms10dlc_profile_id: Optional[str] = Field(default=None, alias="sms10dlcProfileId")
     sms_campaign_id: Optional[str] = None
     sms_assignment_status: Optional[PhoneNumberSmsAssignmentStatus] = None
@@ -829,6 +835,10 @@ class PhoneNumberUpdateParams(_SpekoModel):
     # Pass None explicitly to unlink, a string to relink.
     agent_id: Optional[str] = None
     sms_automation_enabled: Optional[bool] = None
+    # Owner/admin-only outbound caller name (CNAM) for a US local number bought
+    # through Speko: letters, digits and spaces, at most 15 characters. Pass
+    # None explicitly (or "") to remove it.
+    caller_name: Optional[str] = None
 
 
 class AvailablePhoneNumberRegion(_SpekoModel):
