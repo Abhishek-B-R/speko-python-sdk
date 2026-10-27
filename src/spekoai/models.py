@@ -586,6 +586,11 @@ class TurnHandling(_SpekoModel):
     turn_detection: Optional[Union[bool, Literal["stt"]]] = None
     context_threshold: Optional[bool] = None
     greet_first: Optional[bool] = None
+    # The only keys the keypad tool may press (subset of 0-9 * #).
+    keypad_allowed_keys: Optional[list[str]] = None
+    # Seconds on a voicemail greeting or an unanswered call screener before
+    # the call ends (30-600, default 120).
+    machine_budget_seconds: Optional[int] = None
 
 
 class TelephonyAmd(_SpekoModel):
@@ -1222,6 +1227,9 @@ class AgentRow(_SpekoModel):
     prompt_variables: Optional[list[AgentPromptVariable]] = None
     # Keys outbound calls press after answer, before the agent's first turn.
     outbound_dtmf: Optional[str] = None
+    # Hard cap on each phone call in seconds when the call names none.
+    # None = the 3600 s default.
+    max_duration_seconds: Optional[int] = None
     created_at: str
     updated_at: str
 
@@ -1250,6 +1258,9 @@ class AgentCreateParams(_SpekoModel):
     # as "8w2". Digits 0-9, * and #, with w or , for a half-second pause. A
     # per-call telephony.dtmf on voice.dial() wins.
     outbound_dtmf: Optional[str] = None
+    # Hard cap on each of this agent's phone calls in whole seconds
+    # (30-14400). A per-call max_duration_seconds on voice.dial() wins.
+    max_duration_seconds: Optional[int] = None
 
 
 class AgentUpdateParams(_SpekoModel):
@@ -1272,6 +1283,8 @@ class AgentUpdateParams(_SpekoModel):
     prompt_variables: Optional[list[AgentPromptVariable]] = None
     # None (passed explicitly) stops pressing keys on answer.
     outbound_dtmf: Optional[str] = None
+    # None (passed explicitly) restores the 3600 s default.
+    max_duration_seconds: Optional[int] = None
 
 
 # --- Agent tools ---------------------------------------------------------------

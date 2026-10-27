@@ -637,3 +637,18 @@ def test_kyb_flow(speko):
 def test_httpx_client_has_user_agent(speko):
     assert speko._client.headers["User-Agent"].startswith("spekoai-python/")
     assert isinstance(speko._client, httpx.Client)
+
+
+def test_agent_call_behaviour_settings_serialize_on_the_wire() -> None:
+    from spekoai._http import dump_params
+    from spekoai.models import AgentUpdateParams, TurnHandling
+
+    assert dump_params({"max_duration_seconds": 900}, AgentUpdateParams) == {
+        "maxDurationSeconds": 900
+    }
+    assert dump_params({"max_duration_seconds": None}, AgentUpdateParams) == {
+        "maxDurationSeconds": None
+    }
+    assert dump_params(
+        {"keypad_allowed_keys": ["1", "#"], "machine_budget_seconds": 45}, TurnHandling
+    ) == {"keypadAllowedKeys": ["1", "#"], "machineBudgetSeconds": 45}
